@@ -6,8 +6,16 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { createGit, isClean, listBranches, listTags } from '../src/git/git.js';
-import { git, makeGitRepo, makeTempDir } from './helpers.js';
+import {
+  branchExists,
+  createGit,
+  isAncestor,
+  isClean,
+  listBranches,
+  listTags,
+  readCommit,
+} from '../src/git/git.js';
+import { commitFiles, git, makeGitRepo, makeTempDir } from './helpers.js';
 
 test('listBranches returns local branches', async () => {
   const { cwd } = await makeGitRepo({ branches: ['as/v2.x', 'ls/v1.x'] });
@@ -87,4 +95,61 @@ test('a directory that is not a repository makes git fail loudly', async () => {
   const notARepo = join(cwd, 'subdir');
 
   await assert.rejects(() => listBranches({ cwd: notARepo }));
+});
+
+test('branchExists knows about short names like origin/devel', async () => {
+  const { cwd } = await makeGitRepo({ withRemote: true });
+
+  // show-ref would need the full name here; rev-parse does not.
+  assert.equal(await branchExists({ cwd, ref: 'devel' }), true);
+  assert.equal(await branchExists({ cwd, ref: 'origin/devel' }), true);
+  assert.equal(await branchExists({ cwd, ref: 'as/v1.x' }), false);
+  assert.equal(await branchExists({ cwd, ref: 'origin/nope' }), false);
+});
+
+test('isAncestor asks whether one commit is already in another', async () => {
+  const { cwd } = await makeGitRepo();
+  const first = (await git(['rev-parse', 'HEAD'], cwd)).trim();
+  const second = await commitFiles(cwd, { 'a.txt': 'a\n' }, 'second');
+
+  assert.equal(await isAncestor({ cwd, sha: first, ref: second }), true);
+  assert.equal(await isAncestor({ cwd, sha: second, ref: first }), false);
+
+  // A name git cannot make sense of is "no", not a crash.
+  assert.equal(await isAncestor({ cwd, sha: second, ref: 'nope' }), false);
+});
+
+test('readCommit reads what a backport needs about a commit', async () => {
+  const { cwd } = await makeGitRepo();
+  const shortSha = await commitFiles(cwd, { 'a.txt': 'a\n' }, 'fix: a thing');
+
+  const commit = await readCommit({ cwd, ref: shortSha });
+
+  assert.match(commit.sha, /^[0-9a-f]{40}$/);
+  assert.equal(commit.shortSha, shortSha);
+  assert.equal(commit.subject, 'fix: a thing');
+  assert.equal(commit.parents.length, 1);
+});
+
+test('readCommit lists two parents for a merge commit', async () => {
+  const { cwd } = await makeGitRepo();
+  await git(['checkout', '-b', 'side'], cwd);
+  await commitFiles(cwd, { 'side.txt': 'side\n' }, 'side work');
+  await git(['checkout', 'devel'], cwd);
+  await commitFiles(cwd, { 'main.txt': 'main\n' }, 'main work');
+  await git(['merge', '--no-ff', '-m', 'Merge side', 'side'], cwd);
+
+  const commit = await readCommit({ cwd, ref: 'HEAD' });
+
+  assert.equal(commit.parents.length, 2);
+});
+
+test('readCommit resolves short names and rejects unknown ones', async () => {
+  const { cwd } = await makeGitRepo();
+  const sha = (await git(['rev-parse', '--short', 'HEAD'], cwd)).trim();
+
+  const commit = await readCommit({ cwd, ref: 'devel' });
+  assert.equal(commit.shortSha, sha);
+
+  await assert.rejects(() => readCommit({ cwd, ref: 'not-a-commit' }));
 });

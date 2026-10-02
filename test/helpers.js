@@ -53,6 +53,25 @@ export async function git(args, cwd) {
 }
 
 /**
+ * Write files, stage them, and commit them. Tests that need extra commits (for
+ * example a commit to backport) call this after makeGitRepo().
+ * @param {string} cwd
+ * @param {Record<string, string>} files File name -> contents.
+ * @param {string} message Commit message.
+ * @returns {Promise<string>} The new commit's short sha.
+ */
+export async function commitFiles(cwd, files, message) {
+  for (const [name, content] of Object.entries(files)) {
+    const path = join(cwd, name);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, content, 'utf8');
+  }
+  await git(['add', '--all'], cwd);
+  await git(['commit', '-m', message], cwd);
+  return (await git(['rev-parse', '--short', 'HEAD'], cwd)).trim();
+}
+
+/**
  * Build a throwaway git repository with a `devel` branch, one commit, and
  * whatever branches, tags and support file the test asks for.
  *
@@ -62,6 +81,9 @@ export async function git(args, cwd) {
  * @param {string} [options.support] Contents of SUPPORT.yaml.
  * @param {boolean} [options.withRemote] Add a bare "origin" and push to it, so
  *   the repository has real remote-tracking branches.
+ * @param {Record<string, Record<string, string>>} [options.branchFiles] Files to
+ *   commit on a branch, keyed by branch name. A file that also changes on devel
+ *   is what makes a backport conflict.
  * @returns {Promise<{cwd: string, remote: string | null}>}
  */
 export async function makeGitRepo({
@@ -69,6 +91,7 @@ export async function makeGitRepo({
   tags = [],
   support,
   withRemote = false,
+  branchFiles = {},
 } = {}) {
   const cwd = await makeTempDir(support ? { 'SUPPORT.yaml': support } : {});
 
@@ -77,8 +100,10 @@ export async function makeGitRepo({
   await git(['config', 'user.name', 'Lifeline Test'], cwd);
   await git(['config', 'user.email', 'test@example.com'], cwd);
 
+  // Commit README.md and, when the test asked for one, SUPPORT.yaml. Both are
+  // committed, so every branch starts from the same clean tree.
   await writeFile(join(cwd, 'README.md'), '# test repository\n');
-  await git(['add', 'README.md'], cwd);
+  await git(['add', '--all'], cwd);
   await git(['commit', '-m', 'first commit'], cwd);
 
   for (const name of branches) {
@@ -86,6 +111,13 @@ export async function makeGitRepo({
   }
   for (const name of tags) {
     await git(['tag', name], cwd);
+  }
+
+  // Give branches their own content, so they differ from devel.
+  for (const [name, files] of Object.entries(branchFiles)) {
+    await git(['checkout', name], cwd);
+    await commitFiles(cwd, files, `content on ${name}`);
+    await git(['checkout', 'devel'], cwd);
   }
 
   let remote = null;
@@ -103,4 +135,39 @@ export async function makeGitRepo({
   }
 
   return { cwd, remote };
+}
+
+/**
+ * A forge that records what it was asked for instead of calling GitHub. Tests
+ * use this so nothing reaches the network.
+ * @param {{prUrl?: string, failPreflight?: string, failCreate?: string}} [options]
+ * @returns {import('../src/forge/github.js').Forge & {calls: object[], preflightCalls: number}}
+ */
+export function makeFakeForge({
+  prUrl = 'https://github.test/org/repo/pull/7',
+  failPreflight = null,
+  failCreate = null,
+} = {}) {
+  const calls = [];
+  let preflightCalls = 0;
+
+  return {
+    calls,
+    get preflightCalls() {
+      return preflightCalls;
+    },
+    async preflight() {
+      preflightCalls += 1;
+      if (failPreflight) {
+        throw new Error(failPreflight);
+      }
+    },
+    async createPullRequest(request) {
+      calls.push(request);
+      if (failCreate) {
+        throw new Error(failCreate);
+      }
+      return { url: prUrl };
+    },
+  };
 }

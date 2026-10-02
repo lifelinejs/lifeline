@@ -6,9 +6,11 @@
 import { readFileSync } from 'node:fs'; // node: prefix = built into Node
 import { Command } from 'commander'; // third-party, installed from npm
 
+import { backport } from './commands/backport.js';
 import { check } from './commands/check.js';
 import { init } from './commands/init.js';
 import { readStatus } from './commands/status.js';
+import { createGithubForge } from './forge/github.js';
 import { createGit } from './git/git.js';
 
 // Read the version from package.json so it is written down in one place only.
@@ -74,6 +76,24 @@ export function buildProgram() {
     .option('--force', 'overwrite an existing SUPPORT.yaml');
   addGlobalOptions(init);
   init.action(runInit);
+
+  const backport = program
+    .command('backport <sha>')
+    .description(
+      'Carry a commit from devel to a support branch, with a pull request.',
+    )
+    .requiredOption('--to <line>', 'target line, for example v1.x')
+    .option(
+      '--label <name>',
+      'label for the pull request (security or critical for ls)',
+    )
+    .option('--branch-name <name>', 'name for the backport branch')
+    .option('--title <text>', 'pull request title')
+    .option('--no-pr', 'stop after pushing, without opening a pull request')
+    .option('--dry-run', 'print the plan and change nothing')
+    .option('--allow-unmerged', 'allow a commit that is not on <remote>/devel');
+  addGlobalOptions(backport);
+  backport.action(runBackport);
 
   return program;
 }
@@ -160,6 +180,81 @@ async function runInit(_options, command) {
   }
 
   process.exitCode = result.exitCode;
+}
+
+/**
+ * The action behind `lifeline backport`.
+ * @param {string} sha The commit to backport, taken from the command name.
+ * @param {object} _options Options of the `backport` command itself.
+ * @param {Command} command The backport command, for merged global options.
+ * @returns {Promise<void>}
+ */
+async function runBackport(sha, _options, command) {
+  const options = command.optsWithGlobals();
+  const cwd = options.cwd;
+  const result = await backport({
+    cwd,
+    git: createGit({ cwd, remote: options.remote }),
+    // Only this line knows which forge we use; an Octokit version later would
+    // change nothing else.
+    forge: createGithubForge({ cwd }),
+    remote: options.remote,
+    sha,
+    to: options.to,
+    label: options.label ?? null,
+    branchName: options.branchName ?? null,
+    title: options.title ?? null,
+    // commander turns --no-pr into options.pr === false
+    noPr: options.pr === false,
+    dryRun: options.dryRun,
+    allowUnmerged: options.allowUnmerged,
+  });
+
+  if (result.plan) {
+    console.log(formatBackportPlan(result.plan));
+  }
+  if (result.done) {
+    console.log(`Pushed to ${options.remote}/${result.plan.branch}.`);
+  }
+  for (const step of result.steps) {
+    console.log(step);
+  }
+  printProblems(result.problems);
+
+  process.exitCode = result.exitCode;
+}
+
+/**
+ * Describe a plan as a list of git commands, for --dry-run and for the record.
+ * @param {import('./core/backport.js').Plan} plan
+ * @returns {string} Multi-line text.
+ */
+function formatBackportPlan(plan) {
+  const lines = [
+    `Target: ${plan.version} (${plan.stage}) on ${plan.baseRef}`,
+    `Commit: ${plan.sha} (${plan.shortSha})`,
+    `Branch: ${plan.branch}`,
+    `Would run: git ${plan.cherryPick.join(' ')}`,
+    `Would run: git ${plan.push.join(' ')}`,
+  ];
+  if (plan.pullRequest) {
+    lines.push(`Would open a pull request: "${plan.title}"`);
+    lines.push(`Would use body:\n${indent(plan.body, '  ')}`);
+    if (plan.labels.length > 0) {
+      lines.push(`Labels: ${plan.labels.join(', ')}`);
+    }
+  } else {
+    lines.push('Would stop after pushing: --no-pr');
+  }
+  return lines.join('\n');
+}
+
+/** Put a space in front of every line but the first. */
+function indent(text, prefix) {
+  return text
+    .split('\n')
+    .map((line, index) => (index === 0 ? line : `${prefix}${line}`))
+    .join('\n');
 }
 
 /**

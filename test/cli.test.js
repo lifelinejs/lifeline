@@ -7,7 +7,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
-import { makeGitRepo, makeTempDir, supportYaml } from './helpers.js';
+import {
+  commitFiles,
+  git,
+  makeGitRepo,
+  makeTempDir,
+  supportYaml,
+} from './helpers.js';
 
 // execFile runs a program without a shell, so nothing can be interpreted by
 // one. Wrapping it in a promise lets us `await` it.
@@ -241,4 +247,108 @@ test('init refuses to overwrite, and --force does it', async () => {
   assert.equal(again.code, 1);
   assert.match(again.stderr, /error: SUPPORT\.yaml already exists/);
   assert.equal(forced.code, 0);
+});
+
+test('backport --help lists every flag', async () => {
+  const { code, stdout } = await lifeline(['backport', '--help']);
+
+  assert.equal(code, 0);
+  for (const flag of [
+    '--to',
+    '--label',
+    '--branch-name',
+    '--title',
+    '--no-pr',
+    '--dry-run',
+    '--allow-unmerged',
+  ]) {
+    assert.match(stdout, new RegExp(flag));
+  }
+});
+
+test('backport --dry-run prints a plan and exits 0', async () => {
+  const repo = await makeGitRepo({
+    branches: ['as/v1.x'],
+    support: supportYaml([{ version: '1.x', stage: 'as' }]),
+    withRemote: true,
+  });
+  const sha = await commitFiles(
+    repo.cwd,
+    { 'src/fix.js': 'export const fixed = true;\n' },
+    'fix: correct the flux capacitor',
+  );
+  await git(['push', 'origin', 'devel'], repo.cwd);
+
+  const { code, stdout } = await lifeline([
+    'backport',
+    sha,
+    '--to',
+    'v1.x',
+    '--dry-run',
+    '--cwd',
+    repo.cwd,
+  ]);
+
+  assert.equal(code, 0);
+  assert.match(stdout, /Target: 1\.x \(as\) on origin\/as\/v1\.x/);
+  assert.match(stdout, new RegExp(`Branch: backport/1\\.x/${sha}`));
+  assert.match(stdout, /Would run: git cherry-pick -x [0-9a-f]{40}/);
+  assert.match(
+    stdout,
+    /Would open a pull request: "\[v1\.x\] fix: correct the flux capacitor"/,
+  );
+  // Nothing was created or pushed.
+  const heads = await git(['ls-remote', '--heads', 'origin'], repo.cwd);
+  assert.doesNotMatch(heads, /backport/);
+});
+
+test('backport without --to is a usage error', async () => {
+  const { code, stderr } = await lifeline(['backport', 'abc123']);
+
+  assert.equal(code, 2);
+  assert.match(stderr, /required option.*--to|--to <line>/);
+});
+
+test('backport to an unlisted line exits 1 with a readable message', async () => {
+  const repo = await makeGitRepo({
+    branches: ['as/v1.x'],
+    support: supportYaml([{ version: '1.x', stage: 'as' }]),
+    withRemote: true,
+  });
+  const sha = await commitFiles(repo.cwd, { 'a.txt': 'a\n' }, 'fix: a thing');
+  await git(['push', 'origin', 'devel'], repo.cwd);
+
+  const { code, stderr } = await lifeline([
+    'backport',
+    sha,
+    '--to',
+    'v7.x',
+    '--cwd',
+    repo.cwd,
+  ]);
+
+  assert.equal(code, 1);
+  assert.match(stderr, /error: "7\.x" is not listed/);
+});
+
+test('backport to a line still in development exits 1', async () => {
+  const repo = await makeGitRepo({
+    branches: ['as/v1.x'],
+    support: supportYaml([{ version: '1.x', stage: 'indev' }]),
+    withRemote: true,
+  });
+  const sha = await commitFiles(repo.cwd, { 'a.txt': 'a\n' }, 'fix: a thing');
+  await git(['push', 'origin', 'devel'], repo.cwd);
+
+  const { code, stderr } = await lifeline([
+    'backport',
+    sha,
+    '--to',
+    'v1.x',
+    '--cwd',
+    repo.cwd,
+  ]);
+
+  assert.equal(code, 1);
+  assert.match(stderr, /error: .*in development on devel/);
 });

@@ -23,7 +23,19 @@ const MAX_BUFFER = 10 * 1024 * 1024;
  * @property {() => Promise<string[]>} tags Tag names.
  * @property {() => Promise<boolean>} isClean Is the working tree clean?
  * @property {() => Promise<void>} fetchRemote Run `git fetch <remote>`.
+ * @property {(ref: string) => Promise<boolean>} branchExists Is there a ref?
+ * @property {(sha: string, ref: string) => Promise<boolean>} isAncestor
+ *   Is `sha` reachable from `ref`?
+ * @property {(ref: string) => Promise<Commit>} commit Read a commit.
  * @property {(args: string[]) => Promise<string>} run Any other git command.
+ */
+
+/**
+ * @typedef {Object} Commit
+ * @property {string} sha The full commit hash.
+ * @property {string} shortSha The short form, as git prints it.
+ * @property {string} subject The first line of the commit message.
+ * @property {string[]} parents Parent hashes; a root commit has none.
  */
 
 /**
@@ -113,7 +125,74 @@ export function createGit({ cwd, remote = 'origin' }) {
     tags: () => listTags({ cwd }),
     isClean: () => isClean({ cwd }),
     fetchRemote: () => fetchRemote({ cwd, remote }),
+    branchExists: (ref) => branchExists({ cwd, ref }),
+    isAncestor: (sha, ref) => isAncestor({ cwd, sha, ref }),
+    commit: (ref) => readCommit({ cwd, ref }),
     run: (args) => git(args, { cwd }),
+  };
+}
+
+/**
+ * Is there a branch or ref with this name, and does it point at a commit?
+ *
+ * `rev-parse` is used rather than `show-ref` because it understands short names
+ * like `origin/devel`. `--quiet` keeps git quiet when the name is unknown, and
+ * `^{commit}` fails for names that are not commits (a directory, say).
+ *
+ * @param {{cwd: string, ref: string}} options
+ * @returns {Promise<boolean>}
+ */
+export async function branchExists({ cwd, ref }) {
+  try {
+    await git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Can we reach `sha` from `ref`? Used to check that a commit is already on
+ * the development branch.
+ * @param {{cwd: string, sha: string, ref: string}} options
+ * @returns {Promise<boolean>}
+ */
+export async function isAncestor({ cwd, sha, ref }) {
+  try {
+    await git(['merge-base', '--is-ancestor', sha, ref], { cwd });
+    return true;
+  } catch {
+    // git exits with 1 when the commit is not an ancestor, and with 128 when
+    // it cannot make sense of the arguments. Both mean "no", and the caller
+    // has already checked that both names exist.
+    return false;
+  }
+}
+
+/**
+ * Read what we need to know about a commit. Fails if the name is not a commit.
+ * @param {{cwd: string, ref: string}} options `ref` may be any git name.
+ * @returns {Promise<Commit>}
+ */
+export async function readCommit({ cwd, ref }) {
+  // "^{commit}" means "the commit this name points at"; it fails loudly when
+  // the name is unknown.
+  const sha = (
+    await git(['rev-parse', '--verify', `${ref}^{commit}`], { cwd })
+  ).trim();
+  const shortSha = (await git(['rev-parse', '--short', sha], { cwd })).trim();
+  const subject = (
+    await git(['show', '-s', '--format=%s', sha], { cwd })
+  ).trim();
+  const parents = (
+    await git(['show', '-s', '--format=%P', sha], { cwd })
+  ).trim();
+
+  return {
+    sha,
+    shortSha,
+    subject,
+    parents: parents === '' ? [] : parents.split(' '),
   };
 }
 
