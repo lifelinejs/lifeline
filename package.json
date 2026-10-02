@@ -1,0 +1,17 @@
+{
+  "name": "@lifelinejs/lifeline",
+  "version": "0.1.0",
+  "description": "Command-line tool to manage Lifeline branches.",
+  "homepage": "https://github.com/lifelinejs/lifeline#readme",
+  "bugs": {
+    "url": "https://github.com/lifelinejs/lifeline/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lifelinejs/lifeline.git"
+  },
+  "license": "Apache-2.0",
+  "author": "Lifeline Team",
+  "type": "module",
+  "main": "src/cli.js"
+}
