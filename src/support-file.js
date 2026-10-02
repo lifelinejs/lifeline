@@ -3,7 +3,7 @@
 // This is the one place Lifeline reads the support file. `src/core` stays pure
 // (no file system), so the commands go through here instead.
 
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { parseSupport } from './core/support.js';
@@ -58,4 +58,43 @@ export async function loadSupport(cwd) {
 
   const parsed = parseSupport(text);
   return { outcome: 'ok', lines: parsed.lines, problems: parsed.problems };
+}
+
+/**
+ * Render lines as the text of a SUPPORT.yaml file.
+ *
+ * The text is built here by hand rather than with the yaml package's
+ * stringify(), so that the schema comment stays on top and versions keep
+ * their quotes: `version: "2.x"`.
+ *
+ * @param {import('./core/support.js').Line[]} lines At least one line: an
+ *   empty list would be read back as `lines:` with nothing under it.
+ * @returns {string} File contents, ending in a newline.
+ */
+export function renderSupportFile(lines) {
+  const header = `# yaml-language-server: $schema=${SCHEMA_URL}\n`;
+  const entries = lines.map((line) => {
+    // A list entry starts with "- " and every following key lines up under it.
+    const fields = [
+      `  - version: "${line.version}"`,
+      `    stage: ${line.stage}`,
+    ];
+    if (line.eol) {
+      fields.push(`    eol: ${line.eol}`);
+    }
+    return fields.join('\n');
+  });
+  return `${header}lines:\n${entries.join('\n')}\n`;
+}
+
+/**
+ * Write SUPPORT.yaml into a directory, replacing any existing file.
+ * @param {string} cwd
+ * @param {string} text
+ * @returns {Promise<string>} The path written to.
+ */
+export async function writeSupport(cwd, text) {
+  const path = join(cwd, SUPPORT_FILE);
+  await writeFile(path, text, 'utf8');
+  return path;
 }

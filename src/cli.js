@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs'; // node: prefix = built into Node
 import { Command } from 'commander'; // third-party, installed from npm
 
 import { check } from './commands/check.js';
+import { init } from './commands/init.js';
 import { readStatus } from './commands/status.js';
 import { createGit } from './git/git.js';
 
@@ -67,6 +68,13 @@ export function buildProgram() {
   addGlobalOptions(check);
   check.action(runCheck);
 
+  const init = program
+    .command('init')
+    .description('Write a starting SUPPORT.yaml from the branches that exist.')
+    .option('--force', 'overwrite an existing SUPPORT.yaml');
+  addGlobalOptions(init);
+  init.action(runInit);
+
   return program;
 }
 
@@ -126,6 +134,29 @@ async function runCheck(_options, command) {
           (result.fetched ? ' (fetched)' : ''),
       );
     }
+  }
+
+  process.exitCode = result.exitCode;
+}
+
+/**
+ * The action behind `lifeline init`.
+ * @param {object} options Options of the `init` command itself.
+ * @param {Command} command The init command, for merged global options.
+ * @returns {Promise<void>}
+ */
+async function runInit(_options, command) {
+  const options = command.optsWithGlobals();
+  const git = createGit({ cwd: options.cwd, remote: options.remote });
+  const result = await init({ cwd: options.cwd, git, force: options.force });
+
+  printProblems(result.problems);
+  if (result.written) {
+    console.log(`Wrote ${result.path}:`);
+    console.log('');
+    console.log(result.text.trimEnd());
+    console.log('');
+    console.log('Run "lifeline check" to review it, and commit it on devel.');
   }
 
   process.exitCode = result.exitCode;

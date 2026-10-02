@@ -219,3 +219,26 @@ test('check --fetch is accepted and reported in the output', async () => {
   assert.equal(code, 0);
   assert.equal(JSON.parse(stdout).fetched, true);
 });
+
+test('init writes a file and check then passes', async () => {
+  const repo = await makeGitRepo({ branches: ['as/v2.x', 'ls/v1.x'] });
+
+  const written = await lifeline(['init', '--cwd', repo.cwd]);
+  assert.equal(written.code, 0);
+  assert.match(written.stdout, /yaml-language-server/);
+
+  const checked = await lifeline(['check', '--cwd', repo.cwd]);
+  assert.equal(checked.code, 0, checked.stderr);
+});
+
+test('init refuses to overwrite, and --force does it', async () => {
+  const repo = await makeGitRepo();
+
+  await lifeline(['init', '--cwd', repo.cwd]);
+  const again = await lifeline(['init', '--cwd', repo.cwd]);
+  const forced = await lifeline(['init', '--cwd', repo.cwd, '--force']);
+
+  assert.equal(again.code, 1);
+  assert.match(again.stderr, /error: SUPPORT\.yaml already exists/);
+  assert.equal(forced.code, 0);
+});
