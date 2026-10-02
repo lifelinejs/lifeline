@@ -4,8 +4,27 @@
 // printing. Every rule returns a list of problems, and problems are returned,
 // never thrown, so callers can decide how to present them.
 
-import { STAGES, sortLinesNewestFirst, stageIndex } from './stages.js';
+import {
+  STAGES,
+  branchFor,
+  lineFromBranch,
+  sortLinesNewestFirst,
+  stageIndex,
+} from './stages.js';
+import { daysUntilEol } from './dates.js';
 import { error, warning } from './problems.js';
+
+/**
+ * What Lifeline knows about a repository. Collected by a command (see
+ * src/commands/check.js) and handed to the rules below.
+ *
+ * @typedef {Object} RepoFacts
+ * @property {string[]} branches Local and remote-tracking branch names, with
+ *   any `<remote>/` prefix already removed.
+ * @property {string[]} tags Tag names, such as "v0.x-eol".
+ * @property {Date} now "Today". Passed in so day counts do not depend on when
+ *   the tests happen to run.
+ */
 
 /**
  * Check the lines of SUPPORT.yaml against each other.
@@ -20,6 +39,22 @@ export function checkLines(lines) {
     ...checkStageOrdering(lines),
     ...checkStageCounts(lines),
     ...checkEolFields(lines),
+  ];
+}
+
+/**
+ * Check the lines against the branches and tags that really exist.
+ * @param {import('./support.js').Line[]} lines
+ * @param {RepoFacts} repoFacts
+ * @returns {import('./problems.js').Problem[]} problems, errors first
+ */
+export function checkAgainstRepo(lines, repoFacts) {
+  return [
+    ...checkUnlistedBranches(lines, repoFacts),
+    ...checkStageMismatch(lines, repoFacts),
+    ...checkMissingBranches(lines, repoFacts),
+    ...checkPastEol(lines, repoFacts),
+    ...checkEolTags(lines, repoFacts),
   ];
 }
 
@@ -137,6 +172,132 @@ function checkEolFields(lines) {
       problems.push(
         warning(
           `"${line.version}" has an "eol" date but is ${line.stage}; "eol" belongs on an ls line.`,
+        ),
+      );
+    }
+  }
+  return problems;
+}
+
+/**
+ * A support branch that SUPPORT.yaml has never heard of: the file and the
+ * repository have drifted apart.
+ * @param {import('./support.js').Line[]} lines
+ * @param {RepoFacts} repoFacts
+ * @returns {import('./problems.js').Problem[]}
+ */
+function checkUnlistedBranches(lines, { branches }) {
+  const listed = new Set(lines.map((line) => line.version));
+
+  const problems = [];
+  for (const name of branches) {
+    const branchLine = lineFromBranch(name);
+    if (branchLine && !listed.has(branchLine.version)) {
+      problems.push(
+        error(
+          `branch ${name} exists, but ${branchLine.version} is not listed in SUPPORT.yaml.`,
+        ),
+      );
+    }
+  }
+  return problems;
+}
+
+/**
+ * The branch exists, but under a different stage than the file claims:
+ * "as/v1.x" while the file says 1.x is in ls.
+ * @param {import('./support.js').Line[]} lines
+ * @param {RepoFacts} repoFacts
+ * @returns {import('./problems.js').Problem[]}
+ */
+function checkStageMismatch(lines, { branches }) {
+  const listed = new Map(lines.map((line) => [line.version, line]));
+
+  const problems = [];
+  for (const name of branches) {
+    const branchLine = lineFromBranch(name);
+    const line = branchLine ? listed.get(branchLine.version) : undefined;
+    if (line && line.stage !== branchLine.stage) {
+      problems.push(
+        error(
+          `branch ${name} exists, but SUPPORT.yaml says ${line.version} is ${line.stage}; ` +
+            `move the branch to ${branchLine.stage}/v${line.version} or update the file.`,
+        ),
+      );
+    }
+  }
+  return problems;
+}
+
+/**
+ * A listed line whose branch has not been created yet. Not an error: support
+ * branches are often created lazily, when the first fix needs one. The one
+ * exception is an el line, which is expected to have a branch behind it.
+ * @param {import('./support.js').Line[]} lines
+ * @param {RepoFacts} repoFacts
+ * @returns {import('./problems.js').Problem[]}
+ */
+function checkMissingBranches(lines, { branches }) {
+  const existing = new Set(branches);
+
+  const problems = [];
+  for (const line of lines) {
+    if (line.stage === 'el') {
+      continue;
+    }
+    const name = branchFor(line);
+    if (name && !existing.has(name)) {
+      problems.push(
+        warning(`${name} does not exist yet; branches may be created lazily.`),
+      );
+    }
+  }
+  return problems;
+}
+
+/**
+ * An ls line whose eol date has passed but which has not moved on to el.
+ * @param {import('./support.js').Line[]} lines
+ * @param {RepoFacts} repoFacts
+ * @returns {import('./problems.js').Problem[]}
+ */
+function checkPastEol(lines, { now }) {
+  const problems = [];
+  for (const line of lines) {
+    if (line.stage === 'el' || !line.eol) {
+      continue;
+    }
+    const days = daysUntilEol(line.eol, now);
+    if (days !== null && days < 0) {
+      problems.push(
+        warning(
+          `"${line.version}" passed its eol date of ${line.eol} ${-days} days ago but is still ${line.stage}; move it to el.`,
+        ),
+      );
+    }
+  }
+  return problems;
+}
+
+/**
+ * A line that has ended should say when, with a vN.x-eol tag.
+ * @param {import('./support.js').Line[]} lines
+ * @param {RepoFacts} repoFacts
+ * @returns {import('./problems.js').Problem[]}
+ */
+function checkEolTags(lines, { tags }) {
+  const existing = new Set(tags);
+
+  const problems = [];
+  for (const line of lines) {
+    if (line.stage !== 'el') {
+      continue;
+    }
+    const tag = `v${line.version}-eol`;
+    if (!existing.has(tag)) {
+      problems.push(
+        warning(
+          `"${line.version}" is at stage el, but there is no ${tag} tag.`,
         ),
       );
     }

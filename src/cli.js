@@ -6,7 +6,9 @@
 import { readFileSync } from 'node:fs'; // node: prefix = built into Node
 import { Command } from 'commander'; // third-party, installed from npm
 
+import { check } from './commands/check.js';
 import { readStatus } from './commands/status.js';
+import { createGit } from './git/git.js';
 
 // Read the version from package.json so it is written down in one place only.
 // import.meta.url is the URL of this file, so "../package.json" is the file
@@ -54,6 +56,17 @@ export function buildProgram() {
   addGlobalOptions(status);
   status.action(runStatus);
 
+  const check = program
+    .command('check')
+    .description(
+      'Check SUPPORT.yaml against itself and against the branches that exist.',
+    )
+    .option('--json', 'print problems as JSON')
+    .option('--strict', 'treat warnings as errors')
+    .option('--fetch', 'run git fetch first, to see remote branches too');
+  addGlobalOptions(check);
+  check.action(runCheck);
+
   return program;
 }
 
@@ -67,7 +80,8 @@ async function runStatus(_options, command) {
   // commander passes (options, command). optsWithGlobals() merges the
   // program-level --cwd/--remote with the ones given after `status`.
   const options = command.optsWithGlobals();
-  const status = await readStatus({ cwd: options.cwd });
+  const git = createGit({ cwd: options.cwd, remote: options.remote });
+  const status = await readStatus({ cwd: options.cwd, git });
 
   if (options.json) {
     // JSON always goes to stdout, even when something is wrong, so that a
@@ -83,12 +97,38 @@ async function runStatus(_options, command) {
     printProblems(status.problems);
   }
 
-  // Exit codes: 2 means "the support file is missing or broken", which is a
-  // configuration error. Warnings alone still exit 0, like `check` without
-  // --strict.
-  if (status.outcome !== 'ok' || hasErrors(status.problems)) {
-    process.exitCode = 2;
+  process.exitCode = status.exitCode;
+}
+
+/**
+ * The action behind `lifeline check`.
+ * @param {object} options Options of the `check` command itself.
+ * @param {Command} command The check command, for merged global options.
+ * @returns {Promise<void>}
+ */
+async function runCheck(_options, command) {
+  const options = command.optsWithGlobals();
+  const git = createGit({ cwd: options.cwd, remote: options.remote });
+  const result = await check({
+    cwd: options.cwd,
+    git,
+    fetch: options.fetch,
+    strict: options.strict,
+  });
+
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    printProblems(result.problems);
+    if (result.problems.length === 0) {
+      console.log(
+        `OK: ${result.counts.lines} lines, ${result.counts.branches} branches.` +
+          (result.fetched ? ' (fetched)' : ''),
+      );
+    }
   }
+
+  process.exitCode = result.exitCode;
 }
 
 /**
@@ -98,11 +138,13 @@ async function runStatus(_options, command) {
  * @returns {string} Multi-line text, without a trailing newline.
  */
 export function formatStatusTable(rows) {
-  const header = ['VERSION', 'STAGE', 'BRANCH', 'EOL', 'DAYS TO EOL'];
+  const header = ['VERSION', 'STAGE', 'BRANCH', 'EXISTS', 'EOL', 'DAYS TO EOL'];
   const body = rows.map((row) => [
     row.version,
     row.stage,
     row.branch ?? '-',
+    // "?" means we could not ask git, e.g. outside a repository.
+    row.exists === null ? '?' : row.exists ? 'yes' : 'no',
     row.eol ?? '-',
     row.daysUntilEol === null ? '-' : String(row.daysUntilEol),
   ]);
@@ -132,11 +174,6 @@ function printProblems(problems) {
   for (const problem of problems) {
     console.error(`${problem.level}: ${problem.message}`);
   }
-}
-
-/** True when at least one problem is an error. */
-function hasErrors(problems) {
-  return problems.some((problem) => problem.level === 'error');
 }
 
 /**

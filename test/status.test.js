@@ -117,7 +117,10 @@ test('the table lines every column up', () => {
   const lines = table.split('\n');
 
   assert.equal(lines.length, 3);
-  assert.match(lines[0], /^VERSION {2}STAGE {2}BRANCH {3}EOL {9}DAYS TO EOL$/);
+  assert.match(
+    lines[0],
+    /^VERSION {2}STAGE {2}BRANCH {3}EXISTS {2}EOL {9}DAYS TO EOL$/,
+  );
 
   // Where each of the first four columns starts, taken from the spaces.
   const columnStarts = lines.map((line) =>
@@ -133,18 +136,40 @@ test('the table lines every column up', () => {
 
 test('the table uses "-" for empty cells and right-aligns the day count', () => {
   const table = formatStatusTable([
-    { version: '2.x', stage: 'as', branch: null, eol: null, daysUntilEol: 7 },
+    {
+      version: '2.x',
+      stage: 'as',
+      branch: null,
+      exists: false,
+      eol: null,
+      daysUntilEol: 7,
+    },
   ]);
 
   assert.equal(
     table.split('\n')[1],
-    '2.x      as     -       -              7',
+    '2.x      as     -       no      -              7',
   );
+});
+
+test('the exists column says yes, no, or "?" when git could not answer', () => {
+  const row = {
+    version: '1.x',
+    stage: 'ls',
+    branch: 'ls/v1.x',
+    eol: null,
+    daysUntilEol: null,
+  };
+  const yes = formatStatusTable([{ ...row, exists: true }]).split('\n')[1];
+  const unknown = formatStatusTable([{ ...row, exists: null }]).split('\n')[1];
+
+  assert.match(yes, /ls\/v1\.x {2}yes/);
+  assert.match(unknown, /ls\/v1\.x {2}\?/);
 });
 
 test('the table works with no lines at all', () => {
   assert.equal(
     formatStatusTable([]),
-    'VERSION  STAGE  BRANCH  EOL  DAYS TO EOL',
+    'VERSION  STAGE  BRANCH  EXISTS  EOL  DAYS TO EOL',
   );
 });

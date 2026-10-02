@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
-import { makeTempDir, supportYaml } from './helpers.js';
+import { makeGitRepo, makeTempDir, supportYaml } from './helpers.js';
 
 // execFile runs a program without a shell, so nothing can be interpreted by
 // one. Wrapping it in a promise lets us `await` it.
@@ -137,4 +137,85 @@ test('an unknown command exits 2', async () => {
 test('an unknown flag exits 2', async () => {
   const { code } = await lifeline(['status', '--nope']);
   assert.equal(code, 2);
+});
+
+test('status shows whether each branch exists', async () => {
+  const { stdout } = await lifeline(['status', '--json']);
+  assert.equal(JSON.parse(stdout).rows[0].exists, true, 'devel exists here');
+
+  const cwd = await makeTempDir();
+  const empty = await lifeline(['status', '--cwd', cwd, '--json']);
+  assert.equal(JSON.parse(empty.stdout).rows.length, 0);
+});
+
+test('check passes on this repository', async () => {
+  const { code, stdout } = await lifeline(['check']);
+  assert.equal(code, 0);
+  assert.match(stdout, /^OK: /);
+});
+
+test('check prints problems on stderr and exits 1', async () => {
+  // as/v1.x exists, but the file says 1.x is in Life Support.
+  const repo = await makeGitRepo({
+    branches: ['as/v2.x', 'as/v1.x'],
+    support: supportYaml([
+      { version: '2.x', stage: 'as' },
+      { version: '1.x', stage: 'ls', eol: '2030-01-01' },
+    ]),
+  });
+
+  const { code, stdout, stderr } = await lifeline(['check', '--cwd', repo.cwd]);
+
+  assert.equal(code, 1);
+  assert.equal(stdout, '');
+  assert.match(
+    stderr,
+    /^error: branch as\/v1\.x exists, but SUPPORT\.yaml says 1\.x is ls/,
+  );
+});
+
+test('check --strict makes warnings fail', async () => {
+  // Everything agrees, except that the ls line has no eol date.
+  const repo = await makeGitRepo({
+    branches: ['ls/v1.x'],
+    support: supportYaml([
+      { version: '2.x', stage: 'indev' },
+      { version: '1.x', stage: 'ls' },
+    ]),
+  });
+
+  const plain = await lifeline(['check', '--cwd', repo.cwd]);
+  const strict = await lifeline([
+    'check',
+    '--cwd',
+    repo.cwd,
+    '--strict',
+    '--json',
+  ]);
+
+  assert.equal(plain.code, 0);
+  assert.match(plain.stderr, /^warning: /m);
+
+  assert.equal(strict.code, 1);
+  const parsed = JSON.parse(strict.stdout);
+  assert.ok(parsed.problems.length > 0);
+  assert.ok(parsed.problems.every((problem) => problem.level === 'error'));
+});
+
+test('check --json always prints, even when the file is broken', async () => {
+  const cwd = await makeTempDir({ 'SUPPORT.yaml': 'lines: 3\n' });
+
+  const { code, stdout } = await lifeline(['check', '--cwd', cwd, '--json']);
+
+  assert.equal(code, 2);
+  const parsed = JSON.parse(stdout);
+  assert.equal(parsed.outcome, 'ok');
+  assert.equal(parsed.problems[0].level, 'error');
+  assert.equal(parsed.exitCode, 2);
+});
+
+test('check --fetch is accepted and reported in the output', async () => {
+  const { code, stdout } = await lifeline(['check', '--fetch', '--json']);
+  assert.equal(code, 0);
+  assert.equal(JSON.parse(stdout).fetched, true);
 });
