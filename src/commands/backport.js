@@ -4,12 +4,9 @@
 // (`git` and `forge` are passed in, so tests use fakes and never touch the
 // network) and returns data. Nothing here prints; the CLI does that.
 
-import {
-  normalizeLine,
-  planBackport,
-  resolveTarget,
-} from '../core/backport.js';
+import { planBackport, resolveTarget } from '../core/backport.js';
 import { error } from '../core/problems.js';
+import { normalizeLine } from '../core/stages.js';
 import { loadSupport } from '../support-file.js';
 
 /**

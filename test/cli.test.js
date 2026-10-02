@@ -161,13 +161,10 @@ test('check passes on this repository', async () => {
 });
 
 test('check prints problems on stderr and exits 1', async () => {
-  // as/v1.x exists, but the file says 1.x is in Life Support.
+  // ls/v1.x exists, but the file says 1.x is still in Active Support.
   const repo = await makeGitRepo({
-    branches: ['as/v2.x', 'as/v1.x'],
-    support: supportYaml([
-      { version: '2.x', stage: 'as' },
-      { version: '1.x', stage: 'ls', eol: '2030-01-01' },
-    ]),
+    branches: ['as/v1.x', 'ls/v1.x'],
+    support: supportYaml([{ version: '1.x', stage: 'as' }]),
   });
 
   const { code, stdout, stderr } = await lifeline(['check', '--cwd', repo.cwd]);
@@ -176,7 +173,7 @@ test('check prints problems on stderr and exits 1', async () => {
   assert.equal(stdout, '');
   assert.match(
     stderr,
-    /^error: branch as\/v1\.x exists, but SUPPORT\.yaml says 1\.x is ls/,
+    /^error: branch ls\/v1\.x exists, but SUPPORT\.yaml says 1\.x is as/,
   );
 });
 
@@ -351,4 +348,121 @@ test('backport to a line still in development exits 1', async () => {
 
   assert.equal(code, 1);
   assert.match(stderr, /error: .*in development on devel/);
+});
+
+test('promote --help lists the flags', async () => {
+  const { code, stdout } = await lifeline(['promote', '--help']);
+
+  assert.equal(code, 0);
+  for (const flag of ['--to', '--date', '--write', '--dry-run', '--force']) {
+    assert.match(stdout, new RegExp(flag));
+  }
+});
+
+test('promote --dry-run prints a plan and exits 0', async () => {
+  const repo = await makeGitRepo({
+    support: supportYaml([{ version: '3.x', stage: 'indev' }]),
+    withRemote: true,
+  });
+
+  const { code, stdout } = await lifeline([
+    'promote',
+    'v3.x',
+    '--dry-run',
+    '--cwd',
+    repo.cwd,
+  ]);
+
+  assert.equal(code, 0);
+  assert.match(stdout, /3\.x: indev -> as/);
+  assert.match(stdout, /Branch: as\/v3\.x \(from origin\/devel\)/);
+  assert.match(
+    stdout,
+    /Would run: git push origin origin\/devel:refs\/heads\/as\/v3\.x/,
+  );
+  assert.match(stdout, /Set 3\.x to as in SUPPORT\.yaml/);
+});
+
+test('promote then check passes end to end', async () => {
+  const repo = await makeGitRepo({
+    support: supportYaml([{ version: '3.x', stage: 'indev' }]),
+    withRemote: true,
+  });
+
+  const promoted = await lifeline([
+    'promote',
+    '3.x',
+    '--write',
+    '--cwd',
+    repo.cwd,
+  ]);
+  assert.equal(promoted.code, 0, promoted.stderr);
+
+  // --fetch so check sees the branch that was just pushed.
+  const checked = await lifeline(['check', '--fetch', '--cwd', repo.cwd]);
+  assert.equal(checked.code, 0, checked.stderr);
+});
+
+test('promote to el is a usage error', async () => {
+  const repo = await makeGitRepo({
+    support: supportYaml([{ version: '3.x', stage: 'indev' }]),
+    withRemote: true,
+  });
+
+  const { code, stderr } = await lifeline([
+    'promote',
+    '3.x',
+    '--to',
+    'el',
+    '--cwd',
+    repo.cwd,
+  ]);
+
+  assert.equal(code, 2);
+  assert.match(stderr, /error: Cannot promote to "el"/);
+});
+
+test('eol --help lists the flags', async () => {
+  const { code, stdout } = await lifeline(['eol', '--help']);
+
+  assert.equal(code, 0);
+  for (const flag of ['--date', '--write', '--dry-run', '--force']) {
+    assert.match(stdout, new RegExp(flag));
+  }
+});
+
+test('eol ends a line end to end, and check then passes', async () => {
+  const repo = await makeGitRepo({
+    branches: ['ls/v1.x'],
+    support: supportYaml([{ version: '1.x', stage: 'ls', eol: '2027-01-01' }]),
+    withRemote: true,
+  });
+
+  const ended = await lifeline([
+    'eol',
+    '1.x',
+    '--date',
+    '2027-02-01',
+    '--write',
+    '--cwd',
+    repo.cwd,
+  ]);
+  assert.equal(ended.code, 0, ended.stderr);
+  assert.match(ended.stdout, /Froze 1\.x on el\/v1\.x/);
+  assert.match(ended.stdout, /Tagged v1\.x-eol/);
+
+  const checked = await lifeline(['check', '--fetch', '--cwd', repo.cwd]);
+  assert.equal(checked.code, 0, checked.stderr);
+});
+
+test('eol refuses a line in development', async () => {
+  const repo = await makeGitRepo({
+    support: supportYaml([{ version: '3.x', stage: 'indev' }]),
+    withRemote: true,
+  });
+
+  const { code, stderr } = await lifeline(['eol', '3.x', '--cwd', repo.cwd]);
+
+  assert.equal(code, 1);
+  assert.match(stderr, /error: .*in development/);
 });

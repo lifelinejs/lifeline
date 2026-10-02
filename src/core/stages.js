@@ -22,6 +22,21 @@ export const DEVELOPMENT_BRANCH = 'devel';
 /** A line's version, e.g. "2.x". */
 export const VERSION_PATTERN = /^\d+\.x$/;
 
+/**
+ * Accept a line as the user typed it: "v1.x" and "1.x" mean the same thing,
+ * and anything else is not a line at all.
+ *
+ * Every command that takes a line as an argument starts here, so `promote`,
+ * `eol` and `backport` all understand each other's spelling.
+ *
+ * @param {string} input What the user typed, for example "v1.x".
+ * @returns {string | null} The version, or null when it is not one.
+ */
+export function normalizeLine(input) {
+  const version = String(input).trim().replace(/^v/, '');
+  return VERSION_PATTERN.test(version) ? version : null;
+}
+
 /** How to recognise a support branch such as "as/v2.x". */
 export const SUPPORT_BRANCH_PATTERN = /^(as|ls|el)\/v\d+\.x$/;
 

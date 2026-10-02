@@ -36,6 +36,31 @@ const ROOT_KEYS = ['lines'];
 const EOL_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
+ * Is this a usable "eol" value: a real calendar day written YYYY-MM-DD?
+ *
+ * The value has to arrive as a string, because YAML 1.2 hands us a string and
+ * Lifeline writes it back the same way. The day is checked against the
+ * calendar too, so "2027-02-30" is rejected even though it matches the shape.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isEolDate(value) {
+  if (typeof value !== 'string' || !EOL_PATTERN.test(value)) {
+    return false;
+  }
+  // Date.parse would roll 2027-02-30 over to 2 March and call it valid, so the
+  // parts are compared back to what the string said.
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+/**
  * Parse the text of a SUPPORT.yaml file.
  * @param {string} text Contents of the file.
  * @returns {ParsedSupport}
@@ -160,7 +185,7 @@ function readEol(value, where, problems) {
     );
     return null;
   }
-  if (Number.isNaN(Date.parse(`${value}T00:00:00Z`))) {
+  if (!isEolDate(value)) {
     problems.push(
       error(`${where} has an "eol" of ${value}, which is not a real date.`),
     );

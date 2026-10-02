@@ -117,15 +117,19 @@ test('warning: an ls line without an eol date', () => {
   assert.match(problems[0], /"1\.x" is in Life Support but has no "eol" date/);
 });
 
-test('warning: an eol date on a line that is not ls', () => {
+test('warning: an eol date on a line that cannot have one', () => {
   assert.match(
     warnings([line('1.x', 'as', { eol: '2030-01-01' })])[0],
     /has an "eol" date but is as/,
   );
   assert.match(
-    warnings([line('0.x', 'el', { eol: '2024-01-01' })])[0],
-    /has an "eol" date but is el/,
+    warnings([line('1.x', 'indev', { eol: '2030-01-01' })])[0],
+    /has an "eol" date but is indev/,
   );
+});
+
+test('an eol date on an el line is fine: it says when the line ended', () => {
+  assert.deepEqual(warnings([line('0.x', 'el', { eol: '2024-01-01' })]), []);
 });
 
 test('errors come before warnings in the returned list', () => {

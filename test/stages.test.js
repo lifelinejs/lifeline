@@ -11,6 +11,7 @@ import {
   isSupportBranch,
   lineFromBranch,
   majorOf,
+  normalizeLine,
   sortLinesNewestFirst,
   stageIndex,
   SUPPORT_BRANCH_PATTERN,
@@ -18,6 +19,18 @@ import {
 
 test('STAGES lists the lifecycle from newest to oldest', () => {
   assert.deepEqual(STAGES, ['indev', 'as', 'ls', 'el']);
+});
+
+test('normalizeLine accepts a line with or without the v', () => {
+  assert.equal(normalizeLine('v1.x'), '1.x');
+  assert.equal(normalizeLine('1.x'), '1.x');
+  assert.equal(normalizeLine('  v10.x '), '10.x');
+});
+
+test('normalizeLine rejects anything that is not a line', () => {
+  assert.equal(normalizeLine('banana'), null);
+  assert.equal(normalizeLine('1.2.3'), null);
+  assert.equal(normalizeLine(''), null);
 });
 
 test('majorOf reads the major number out of a version', () => {

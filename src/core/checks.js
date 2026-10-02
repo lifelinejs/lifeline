@@ -154,7 +154,9 @@ function checkStageCounts(lines) {
 }
 
 /**
- * eol belongs to an ls line: it is the day that line stops getting fixes.
+ * eol says when a line stops getting fixes, so it belongs on a line in Life
+ * Support, or on one that has already ended. Anywhere else, the stage and the
+ * date disagree with each other.
  * @param {import('./support.js').Line[]} lines
  * @returns {import('./problems.js').Problem[]}
  */
@@ -168,10 +170,10 @@ function checkEolFields(lines) {
         ),
       );
     }
-    if (line.eol && line.stage !== 'ls') {
+    if (line.eol && line.stage !== 'ls' && line.stage !== 'el') {
       problems.push(
         warning(
-          `"${line.version}" has an "eol" date but is ${line.stage}; "eol" belongs on an ls line.`,
+          `"${line.version}" has an "eol" date but is ${line.stage}; "eol" belongs on an ls or el line.`,
         ),
       );
     }
@@ -204,8 +206,11 @@ function checkUnlistedBranches(lines, { branches }) {
 }
 
 /**
- * The branch exists, but under a different stage than the file claims:
- * "as/v1.x" while the file says 1.x is in ls.
+ * A branch that is ahead of the line: "ls/v1.x" while the file says 1.x is as.
+ * A branch at an earlier stage than the file claims is a snapshot left behind
+ * by a transition (the ls/v1.x branch after 1.x ended on el/v1.x). Lifeline
+ * never deletes refs, so that is expected history, not a problem; only a branch
+ * ahead of the file means the file is stale.
  * @param {import('./support.js').Line[]} lines
  * @param {RepoFacts} repoFacts
  * @returns {import('./problems.js').Problem[]}
@@ -217,22 +222,27 @@ function checkStageMismatch(lines, { branches }) {
   for (const name of branches) {
     const branchLine = lineFromBranch(name);
     const line = branchLine ? listed.get(branchLine.version) : undefined;
-    if (line && line.stage !== branchLine.stage) {
-      problems.push(
-        error(
-          `branch ${name} exists, but SUPPORT.yaml says ${line.version} is ${line.stage}; ` +
-            `move the branch to ${branchLine.stage}/v${line.version} or update the file.`,
-        ),
-      );
+    if (!line) {
+      continue;
     }
+    if (stageIndex(branchLine.stage) <= stageIndex(line.stage)) {
+      continue;
+    }
+    problems.push(
+      error(
+        `branch ${name} exists, but SUPPORT.yaml says ${line.version} is ${line.stage}; ` +
+          `promote ${line.version} or update the file.`,
+      ),
+    );
   }
   return problems;
 }
 
 /**
  * A listed line whose branch has not been created yet. Not an error: support
- * branches are often created lazily, when the first fix needs one. The one
- * exception is an el line, which is expected to have a branch behind it.
+ * branches are often created lazily, when the first fix needs one. An el line
+ * is skipped: its archive is written once by `eol`, and the vN.x-eol tag is
+ * what marks the end.
  * @param {import('./support.js').Line[]} lines
  * @param {RepoFacts} repoFacts
  * @returns {import('./problems.js').Problem[]}

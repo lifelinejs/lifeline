@@ -5,26 +5,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
-  normalizeLine,
   planBackport,
   pullRequestBody,
   pullRequestTitle,
   resolveTarget,
 } from '../src/core/backport.js';
-
-describe('normalizeLine', () => {
-  it('accepts a line with or without the v', () => {
-    assert.equal(normalizeLine('v1.x'), '1.x');
-    assert.equal(normalizeLine('1.x'), '1.x');
-    assert.equal(normalizeLine('  v10.x '), '10.x');
-  });
-
-  it('rejects anything that is not a line', () => {
-    assert.equal(normalizeLine('banana'), null);
-    assert.equal(normalizeLine('1.2.3'), null);
-    assert.equal(normalizeLine(''), null);
-  });
-});
 
 describe('resolveTarget', () => {
   const lines = [

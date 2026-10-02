@@ -82,9 +82,26 @@ export function renderSupportFile(lines) {
     if (line.eol) {
       fields.push(`    eol: ${line.eol}`);
     }
+    // "components" is informational, but a command that rewrites the file
+    // (promote, eol) must not throw it away, so it is written back out.
+    if (line.components && line.components.length > 0) {
+      fields.push(`    components:\n${renderComponents(line.components)}`);
+    }
     return fields.join('\n');
   });
   return `${header}lines:\n${entries.join('\n')}\n`;
+}
+
+/**
+ * A YAML list of strings, one per line, indented under its key. Each string is
+ * quoted, so a component called "api: v2" cannot be read as a mapping.
+ * @param {string[]} components
+ * @returns {string} The list, without the key it goes under.
+ */
+function renderComponents(components) {
+  return components
+    .map((component) => `      - ${JSON.stringify(component)}`)
+    .join('\n');
 }
 
 /**

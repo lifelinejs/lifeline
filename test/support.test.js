@@ -155,10 +155,12 @@ test('reports a numeric eol', () => {
 });
 
 test('reports an eol that is formatted right but is not a real date', () => {
-  const { problems } = parseSupport(
-    'lines:\n  - version: "1.x"\n    stage: ls\n    eol: 2027-13-01\n',
-  );
-  assert.match(errors(problems)[0], /not a real date/);
+  for (const date of ['2027-13-01', '2027-02-30']) {
+    const { problems } = parseSupport(
+      `lines:\n  - version: "1.x"\n    stage: ls\n    eol: ${date}\n`,
+    );
+    assert.match(errors(problems)[0], /not a real date/);
+  }
 });
 
 test('reports components that are not a list of strings', () => {

@@ -83,11 +83,9 @@ test('error: a support branch that SUPPORT.yaml does not list', async () => {
   ]);
 });
 
-test('error: a branch under the wrong stage prefix', async () => {
+test('error: a branch ahead of the stage in SUPPORT.yaml', async () => {
   const cwd = await makeTempDir({
-    'SUPPORT.yaml': supportYaml([
-      { version: '1.x', stage: 'ls', eol: '2030-01-01' },
-    ]),
+    'SUPPORT.yaml': supportYaml([{ version: '1.x', stage: 'as' }]),
   });
   const git = fakeGit({ branches: ['devel', 'as/v1.x', 'ls/v1.x'] });
 
@@ -95,8 +93,24 @@ test('error: a branch under the wrong stage prefix', async () => {
 
   assert.equal(result.exitCode, 1);
   assert.deepEqual(errors(result.problems), [
-    'branch as/v1.x exists, but SUPPORT.yaml says 1.x is ls; move the branch to as/v1.x or update the file.',
+    'branch ls/v1.x exists, but SUPPORT.yaml says 1.x is as; promote 1.x or update the file.',
   ]);
+});
+
+test('an earlier-stage branch is history, not a mismatch', async () => {
+  const cwd = await makeTempDir({
+    'SUPPORT.yaml': supportYaml([
+      { version: '1.x', stage: 'el', eol: '2024-01-01' },
+    ]),
+  });
+  const git = fakeGit({
+    branches: ['devel', 'ls/v1.x', 'el/v1.x'],
+    tags: ['v1.x-eol'],
+  });
+
+  const result = await check({ cwd, git, now: NOW });
+
+  assert.equal(result.exitCode, 0, errors(result.problems).join('\n'));
 });
 
 test('warning: a listed line whose branch does not exist yet', async () => {

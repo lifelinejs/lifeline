@@ -4,7 +4,6 @@
 // a commit into a plan, and it returns problems instead of throwing them.
 
 import { error } from './problems.js';
-import { VERSION_PATTERN } from './stages.js';
 
 /** The stages a fix may be backported into. */
 export const BACKPORT_STAGES = ['as', 'ls'];
@@ -29,16 +28,6 @@ export const LS_LABELS = ['security', 'critical'];
  * @property {string[]} labels Labels for the pull request.
  * @property {boolean} pullRequest False when the user passed --no-pr.
  */
-
-/**
- * Accept "1.x" and "v1.x" alike, and reject anything else.
- * @param {string} input What the user typed after --to.
- * @returns {string | null} The version, or null when it is not one.
- */
-export function normalizeLine(input) {
-  const version = String(input).trim().replace(/^v/, '');
-  return VERSION_PATTERN.test(version) ? version : null;
-}
 
 /**
  * Find the line a backport is aimed at, and say no if it should not go there.

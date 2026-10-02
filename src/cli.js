@@ -8,7 +8,9 @@ import { Command } from 'commander'; // third-party, installed from npm
 
 import { backport } from './commands/backport.js';
 import { check } from './commands/check.js';
+import { eol } from './commands/eol.js';
 import { init } from './commands/init.js';
+import { promote } from './commands/promote.js';
 import { readStatus } from './commands/status.js';
 import { createGithubForge } from './forge/github.js';
 import { createGit } from './git/git.js';
@@ -94,6 +96,27 @@ export function buildProgram() {
     .option('--allow-unmerged', 'allow a commit that is not on <remote>/devel');
   addGlobalOptions(backport);
   backport.action(runBackport);
+
+  const promote = program
+    .command('promote <line>')
+    .description('Move a line along the lifecycle: indev -> as -> ls.')
+    .option('--to <stage>', 'stage to move to: as or ls', 'as')
+    .option('--date <date>', 'end-of-life date YYYY-MM-DD, for --to ls')
+    .option('--write', 'update SUPPORT.yaml as well')
+    .option('--dry-run', 'print the plan and change nothing')
+    .option('--force', 'accept a branch that already exists');
+  addGlobalOptions(promote);
+  promote.action(runPromote);
+
+  const eol = program
+    .command('eol <line>')
+    .description('End a line: freeze its code, tag it, and record the date.')
+    .option('--date <date>', 'the day it ends YYYY-MM-DD (default: today)')
+    .option('--write', 'update SUPPORT.yaml as well')
+    .option('--dry-run', 'print the plan and change nothing')
+    .option('--force', 'accept a branch or tag that already exists');
+  addGlobalOptions(eol);
+  eol.action(runEol);
 
   return program;
 }
@@ -255,6 +278,88 @@ function indent(text, prefix) {
     .split('\n')
     .map((line, index) => (index === 0 ? line : `${prefix}${line}`))
     .join('\n');
+}
+
+/**
+ * The action behind `lifeline promote`.
+ * @param {string} line The line, from the command name.
+ * @param {object} _options Options of the `promote` command itself.
+ * @param {Command} command The promote command, for merged global options.
+ * @returns {Promise<void>}
+ */
+async function runPromote(line, _options, command) {
+  const options = command.optsWithGlobals();
+  const result = await promote({
+    cwd: options.cwd,
+    git: createGit({ cwd: options.cwd, remote: options.remote }),
+    remote: options.remote,
+    version: line,
+    to: options.to,
+    date: options.date ?? null,
+    write: options.write ?? false,
+    dryRun: options.dryRun ?? false,
+    force: options.force ?? false,
+  });
+
+  // A plan is only a promise of work; print it when the work is not going to
+  // happen. On a real run, the steps below say what did.
+  if (options.dryRun && result.exitCode === 0 && result.plan) {
+    console.log(formatTransitionPlan(result.plan));
+  }
+  for (const step of result.steps) {
+    console.log(step);
+  }
+  printProblems(result.problems);
+
+  process.exitCode = result.exitCode;
+}
+
+/**
+ * The action behind `lifeline eol`.
+ * @param {string} line The line, from the command name.
+ * @param {object} _options Options of the `eol` command itself.
+ * @param {Command} command The eol command, for merged global options.
+ * @returns {Promise<void>}
+ */
+async function runEol(line, _options, command) {
+  const options = command.optsWithGlobals();
+  const result = await eol({
+    cwd: options.cwd,
+    git: createGit({ cwd: options.cwd, remote: options.remote }),
+    remote: options.remote,
+    version: line,
+    date: options.date ?? null,
+    write: options.write ?? false,
+    dryRun: options.dryRun ?? false,
+    force: options.force ?? false,
+  });
+
+  if (options.dryRun && result.exitCode === 0 && result.plan) {
+    console.log(formatTransitionPlan(result.plan));
+  }
+  for (const step of result.steps) {
+    console.log(step);
+  }
+  printProblems(result.problems);
+
+  process.exitCode = result.exitCode;
+}
+
+/**
+ * Describe a stage change, for --dry-run and for the record.
+ * @param {import('./core/lifecycle.js').TransitionPlan} plan
+ * @returns {string} Multi-line text.
+ */
+function formatTransitionPlan(plan) {
+  const lines = [
+    `${plan.version}: ${plan.from} -> ${plan.to}`,
+    `Branch: ${plan.branch} (from ${plan.baseRef})`,
+  ];
+  if (plan.tag) {
+    lines.push(`Tag: ${plan.tag}`);
+  }
+  lines.push(`Would run: git ${plan.push.join(' ')}`);
+  return lines.join('\n');
 }
 
 /**
