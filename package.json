@@ -13,5 +13,33 @@
   "license": "Apache-2.0",
   "author": "Lifeline Team",
   "type": "module",
-  "main": "src/cli.js"
+  "main": "src/cli.js",
+  "bin": {
+    "lifeline": "bin/lifeline.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "schema"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:watch": "node --test --watch",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "eslint": "^9.17.0",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2"
+  }
 }

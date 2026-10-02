@@ -1,0 +1,11 @@
+{
+  "singleQuote": true,
+  "trailingComma": "all",
+  "overrides": [
+    {
+      "comment": "YAML strings stay double-quoted so SUPPORT.yaml reads like the docs.",
+      "files": "*.yaml",
+      "options": { "singleQuote": false }
+    }
+  ]
+}

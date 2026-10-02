@@ -1,0 +1,6 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/lifelinejs/lifeline/devel/schema/support.schema.json
+lines:
+  # Lifeline has not released a stable major version yet, so the whole
+  # repository is a single "indev" line: every change lands on `devel`.
+  - version: "0.x"
+    stage: indev

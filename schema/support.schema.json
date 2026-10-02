@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/lifelinejs/lifeline/devel/schema/support.schema.json",
+  "title": "Lifeline SUPPORT.yaml",
+  "description": "Editor helper only. Lifeline validates SUPPORT.yaml with its own hand-written checks in src/core, not with this schema. Keep this file in sync with src/core/support.js by hand.",
+  "type": "object",
+  "required": ["lines"],
+  "additionalProperties": false,
+  "properties": {
+    "lines": {
+      "type": "array",
+      "description": "One entry per release line (major version series).",
+      "items": {
+        "type": "object",
+        "required": ["version", "stage"],
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^\\d+\\.x$",
+            "description": "Major version series, for example \"2.x\".",
+            "examples": ["3.x", "2.x", "1.x"]
+          },
+          "stage": {
+            "type": "string",
+            "enum": ["indev", "as", "ls", "el"],
+            "description": "Lifecycle stage: indev (development), as (Active Support), ls (Life Support), el (End of Life).",
+            "examples": ["indev", "as", "ls", "el"]
+          },
+          "eol": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Planned end-of-life date for an ls line, as a YYYY-MM-DD string.",
+            "examples": ["2027-03-01"]
+          },
+          "components": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Informational only; Lifeline does not use this."
+          }
+        }
+      }
+    }
+  }
+}
