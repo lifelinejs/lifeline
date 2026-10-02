@@ -26,8 +26,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test",
-    "test:watch": "node --test --watch",
+    "test": "node --test \"test/*.test.js\"",
+    "test:watch": "node --test --watch \"test/*.test.js\"",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

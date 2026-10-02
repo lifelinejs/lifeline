@@ -1,10 +1,12 @@
 // The command-line interface.
 //
-// Only this file knows about argument parsing. Each command in `src/commands/`
-// does the real work.
+// Only this file knows about argument parsing and how the output looks. Each
+// command in `src/commands/` reads data and returns data; printing happens here.
 
 import { readFileSync } from 'node:fs'; // node: prefix = built into Node
 import { Command } from 'commander'; // third-party, installed from npm
+
+import { readStatus } from './commands/status.js';
 
 // Read the version from package.json so it is written down in one place only.
 // import.meta.url is the URL of this file, so "../package.json" is the file
@@ -12,6 +14,23 @@ import { Command } from 'commander'; // third-party, installed from npm
 const packageJson = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
 );
+
+/**
+ * Add `--cwd` and `--remote` to a command. They are added to the program and
+ * to every sub-command, so both `lifeline --cwd x status` and
+ * `lifeline status --cwd x` work.
+ * @param {Command} command
+ * @returns {Command} the same command, so calls can be chained
+ */
+function addGlobalOptions(command) {
+  return command
+    .option(
+      '--cwd <dir>',
+      'run as if lifeline was started in <dir>',
+      process.cwd(),
+    )
+    .option('--remote <name>', 'git remote to use', 'origin');
+}
 
 /**
  * Build the commander program. Returns it instead of parsing, so tests can
@@ -26,7 +45,98 @@ export function buildProgram() {
       'Manage the Active Support / Life Support lifecycle of release lines.',
     )
     .version(packageJson.version);
+  addGlobalOptions(program);
+
+  const status = program
+    .command('status')
+    .description('Show every support line from SUPPORT.yaml.')
+    .option('--json', 'print JSON instead of a table');
+  addGlobalOptions(status);
+  status.action(runStatus);
+
   return program;
+}
+
+/**
+ * The action behind `lifeline status`.
+ * @param {object} options Options of the `status` command itself.
+ * @param {Command} command The status command, for merged global options.
+ * @returns {Promise<void>}
+ */
+async function runStatus(_options, command) {
+  // commander passes (options, command). optsWithGlobals() merges the
+  // program-level --cwd/--remote with the ones given after `status`.
+  const options = command.optsWithGlobals();
+  const status = await readStatus({ cwd: options.cwd });
+
+  if (options.json) {
+    // JSON always goes to stdout, even when something is wrong, so that a
+    // script can read the problems instead of guessing from the exit code.
+    console.log(JSON.stringify(status, null, 2));
+  } else if (status.outcome === 'ok') {
+    console.log(formatStatusTable(status.rows));
+    if (status.rows.length === 0) {
+      console.log('No lines in SUPPORT.yaml.');
+    }
+    printProblems(status.problems);
+  } else {
+    printProblems(status.problems);
+  }
+
+  // Exit codes: 2 means "the support file is missing or broken", which is a
+  // configuration error. Warnings alone still exit 0, like `check` without
+  // --strict.
+  if (status.outcome !== 'ok' || hasErrors(status.problems)) {
+    process.exitCode = 2;
+  }
+}
+
+/**
+ * Render the status table: fixed column order, columns padded with spaces.
+ * No table library; a few string operations is all it takes.
+ * @param {import('./commands/status.js').StatusRow[]} rows
+ * @returns {string} Multi-line text, without a trailing newline.
+ */
+export function formatStatusTable(rows) {
+  const header = ['VERSION', 'STAGE', 'BRANCH', 'EOL', 'DAYS TO EOL'];
+  const body = rows.map((row) => [
+    row.version,
+    row.stage,
+    row.branch ?? '-',
+    row.eol ?? '-',
+    row.daysUntilEol === null ? '-' : String(row.daysUntilEol),
+  ]);
+
+  // The widest cell in each column sets that column's width.
+  const widths = header.map((title, index) =>
+    Math.max(title.length, ...body.map((cells) => cells[index].length)),
+  );
+
+  const line = (cells) =>
+    cells
+      .map((cell, index) =>
+        // Numbers read better right-aligned; text reads better left-aligned.
+        index === cells.length - 1
+          ? cell.padStart(widths[index])
+          : cell.padEnd(widths[index]),
+      )
+      // Padding at the end of the last column would show up in git diffs.
+      .join('  ')
+      .trimEnd();
+
+  return [header, ...body].map(line).join('\n');
+}
+
+/** Write problems to stderr, one per line, as "error: ..." or "warning: ...". */
+function printProblems(problems) {
+  for (const problem of problems) {
+    console.error(`${problem.level}: ${problem.message}`);
+  }
+}
+
+/** True when at least one problem is an error. */
+function hasErrors(problems) {
+  return problems.some((problem) => problem.level === 'error');
 }
 
 /**
@@ -36,5 +146,38 @@ export function buildProgram() {
  */
 export async function runCli(argv) {
   const program = buildProgram();
-  program.parse(argv);
+  disableExit(program);
+
+  try {
+    // parseAsync waits for async actions, so set process.exitCode afterwards.
+    await program.parseAsync(argv);
+  } catch (cliError) {
+    // --help and --version are successes, not usage errors.
+    if (HELP_CODES.has(cliError.code)) {
+      return;
+    }
+    // commander has already printed the message on stderr.
+    process.exitCode = 2;
+  }
 }
+
+/**
+ * Stop commander from calling process.exit() itself, on this command and on
+ * every sub-command. It then throws instead, and we choose the exit code.
+ * @param {Command} command
+ * @returns {Command} the same command
+ */
+function disableExit(command) {
+  command.exitOverride();
+  for (const subCommand of command.commands) {
+    disableExit(subCommand);
+  }
+  return command;
+}
+
+/** commander error codes that mean "we printed help and that is fine". */
+const HELP_CODES = new Set([
+  'commander.help',
+  'commander.helpDisplayed',
+  'commander.version',
+]);

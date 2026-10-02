@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Entry point for the `lifeline` command.
 //
 // The shebang line must be the very first line: it tells the OS to run this
@@ -6,4 +7,4 @@
 
 import { runCli } from '../src/cli.js';
 
-runCli(process.argv);
+await runCli(process.argv);
