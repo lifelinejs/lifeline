@@ -97,6 +97,52 @@ test('a broken SUPPORT.yaml keeps its problems', async () => {
   assert.match(status.problems[0].message, /needs a "version" string/);
 });
 
+/** A git stand-in whose `branches()` fails the way git itself does. */
+function failingBranches(stderr) {
+  return {
+    branches: async () => {
+      const failure = new Error(`Command failed: git for-each-ref\n${stderr}`);
+      failure.stderr = `${stderr}\n`;
+      throw failure;
+    },
+  };
+}
+
+test('outside a repository the table still shows, and nothing is a problem', async () => {
+  const cwd = await makeTempDir({
+    'SUPPORT.yaml': supportYaml([{ version: '2.x', stage: 'as' }]),
+  });
+
+  const status = await readStatus({
+    cwd,
+    git: failingBranches('fatal: not a git repository (or any parent)'),
+    now: NOW,
+  });
+
+  assert.equal(status.outcome, 'ok');
+  assert.deepEqual(status.problems, []);
+  assert.equal(status.exitCode, 0);
+  assert.equal(status.rows[0].exists, null); // the "?" column
+});
+
+test('any other git failure is a problem and fails the command', async () => {
+  const cwd = await makeTempDir({
+    'SUPPORT.yaml': supportYaml([{ version: '2.x', stage: 'as' }]),
+  });
+
+  const status = await readStatus({
+    cwd,
+    git: failingBranches('fatal: bad object in refs/heads'),
+    now: NOW,
+  });
+
+  const reported = status.problems.find((problem) =>
+    /Could not read the repository/.test(problem.message),
+  );
+  assert.equal(reported?.level, 'error');
+  assert.equal(status.exitCode, 1);
+});
+
 test('the table lines every column up', () => {
   const table = formatStatusTable([
     {

@@ -8,6 +8,7 @@
 import { branchFor, sortLinesNewestFirst } from '../core/stages.js';
 import { checkLines } from '../core/checks.js';
 import { daysUntilEol } from '../core/dates.js';
+import { error } from '../core/problems.js';
 import { exitCodeFor } from '../exit-code.js';
 import { loadSupport } from '../support-file.js';
 
@@ -42,9 +43,10 @@ import { loadSupport } from '../support-file.js';
  */
 export async function readStatus({ cwd, git = null, now = new Date() }) {
   const loaded = await loadSupport(cwd);
-  // If the directory is not a git repository we still want the table, so a
-  // failed `git` call only costs us the exists column.
-  const branches = await tryBranches(git);
+  // Outside a repository the table is still wanted, so that case only costs
+  // the exists column. Any other git failure is a problem to report and fail
+  // on, not something to swallow.
+  const { branches, problem } = await branchesOrProblem(git);
 
   const rows = sortLinesNewestFirst(loaded.lines).map((line) => {
     const branch = branchFor(line);
@@ -61,7 +63,11 @@ export async function readStatus({ cwd, git = null, now = new Date() }) {
 
   // status, check and --json all show the same problem objects, so a line that
   // is in a strange state is worth a word here too.
-  const problems = [...loaded.problems, ...checkLines(loaded.lines)];
+  const problems = [
+    ...loaded.problems,
+    ...checkLines(loaded.lines),
+    ...(problem ? [problem] : []),
+  ];
   return {
     outcome: loaded.outcome,
     rows,
@@ -72,17 +78,41 @@ export async function readStatus({ cwd, git = null, now = new Date() }) {
 }
 
 /**
- * Ask git for its branch list, or give up quietly.
+ * Ask git for its branch list.
+ *
+ * Not being in a repository is the expected case: the table still shows, with
+ * "?" in the exists column, and nothing is reported. Every other failure is
+ * turned into an error problem, so the command reports it and exits non-zero
+ * instead of quietly showing a column of "?".
+ *
  * @param {import('../git/git.js').Git | null} git
- * @returns {Promise<string[] | null>} null when git could not be asked.
+ * @returns {Promise<{branches: string[] | null,
+ *   problem: import('../core/problems.js').Problem | null}>} `branches` is
+ *   null when git could not be asked.
  */
-async function tryBranches(git) {
+async function branchesOrProblem(git) {
   if (!git) {
-    return null;
+    return { branches: null, problem: null };
   }
   try {
-    return await git.branches();
-  } catch {
-    return null;
+    return { branches: await git.branches(), problem: null };
+  } catch (gitError) {
+    if (isOutsideRepository(gitError)) {
+      return { branches: null, problem: null };
+    }
+    return {
+      branches: null,
+      problem: error(`Could not read the repository: ${gitError.message}`),
+    };
   }
+}
+
+/**
+ * Is git's complaint the expected "you are not in a repository" one?
+ * @param {Error & {stderr?: string}} gitError What `git.branches()` rejected with.
+ * @returns {boolean}
+ */
+function isOutsideRepository(gitError) {
+  const said = String(gitError.stderr || gitError.message || '');
+  return said.includes('not a git repository');
 }
