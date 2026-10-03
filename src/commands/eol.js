@@ -204,11 +204,9 @@ export async function eol({
   } else if (branchExisted && !tagExisted) {
     refspecs.push(`${remote}/${plan.branch}:refs/tags/${plan.tag}`);
   } else if (!branchExisted && tagExisted) {
-    let tagCommit;
+    const tagCommit = remoteTag.peeled ?? remoteTag.sha;
     try {
-      tagCommit = (
-        await git.run(['rev-parse', '--verify', `${plan.tag}^{commit}`])
-      ).trim();
+      await git.run(['cat-file', '-e', `${tagCommit}^{commit}`]);
     } catch {
       return result(plan, {
         problems: [

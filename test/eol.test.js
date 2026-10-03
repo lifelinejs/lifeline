@@ -405,6 +405,62 @@ describe('eol with refs that already exist', () => {
 });
 
 describe('eol keeps one freeze snapshot', () => {
+  for (const annotated of [false, true]) {
+    for (const localTag of ['conflicting', 'absent']) {
+      it(`uses the remote ${annotated ? 'annotated' : 'lightweight'} tag with a ${localTag} local tag`, async () => {
+        const cwd = await setup();
+        const frozen = (await git(['rev-parse', 'HEAD'], cwd)).trim();
+        await git(
+          annotated
+            ? ['tag', '-a', 'v1.x-eol', '-m', 'End of life']
+            : ['tag', 'v1.x-eol'],
+          cwd,
+        );
+        await git(['push', 'origin', 'refs/tags/v1.x-eol'], cwd);
+        await git(['tag', '-d', 'v1.x-eol'], cwd);
+        await git(['config', 'remote.origin.tagOpt', '--no-tags'], cwd);
+        if (localTag === 'conflicting') {
+          await commitFiles(cwd, { 'later.txt': 'later\n' }, 'Local change');
+          await git(['tag', 'v1.x-eol'], cwd);
+        }
+
+        const result = await run(cwd, { date: '2027-02-01', force: true });
+
+        assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+        assert.equal(result.pushed, true);
+        const branch = await git(
+          ['ls-remote', 'origin', 'refs/heads/el/v1.x'],
+          cwd,
+        );
+        assert.equal(branch.trim().split(/\s+/)[0], frozen);
+      });
+    }
+  }
+
+  it('retains fetch guidance when the remote tag commit is unavailable locally', async () => {
+    const cwd = await setup({ tags: ['v1.x-eol'] });
+    const before = await readSupportFile(cwd);
+    const remote = (await git(['remote', 'get-url', 'origin'], cwd)).trim();
+    const { cwd: publisher } = await makeGitRepo();
+    await commitFiles(
+      publisher,
+      { 'remote-only.txt': 'frozen\n' },
+      'Remote freeze',
+    );
+    await git(['tag', 'v1.x-eol'], publisher);
+    await git(['push', '--force', remote, 'refs/tags/v1.x-eol'], publisher);
+    await git(['config', 'remote.origin.tagOpt', '--no-tags'], cwd);
+
+    const result = await run(cwd, { force: true, write: true });
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.pushed, false);
+    assert.equal(result.written, false);
+    assert.match(result.problems[0].message, /git fetch origin tag v1\.x-eol/);
+    assert.doesNotMatch(await remoteRefs(cwd), /refs\/heads\/el\/v1\.x/);
+    assert.equal(await readSupportFile(cwd), before);
+  });
+
   it('publishes the frozen branch and the tag together, or not at all', async () => {
     const cwd = await setup();
     const { mkdir, rm, writeFile } = await import('node:fs/promises');

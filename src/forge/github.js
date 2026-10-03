@@ -55,6 +55,7 @@ export async function preflight({ cwd } = {}) {
  *
  * Understands the shapes git accepts for a GitHub remote: https, ssh, git://
  * and the scp-like `git@host:owner/repo`. Exported for the tests.
+ * Preflight checks the host's GitHub API, including Enterprise hosts.
  *
  * @param {string} url What `git remote get-url` printed.
  * @param {string} [remote] The remote's name; only used in the error message.
@@ -62,15 +63,21 @@ export async function preflight({ cwd } = {}) {
  * @throws {Error} When the URL is not a repository URL gh could use.
  */
 export function parseRepositoryUrl(url, remote = 'origin') {
-  const trimmed = url.trim().replace(/\.git$/, '');
+  const trimmed = url.trim();
+  let host;
+  let path;
 
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
     // A scheme URL: https://github.com/org/repo, ssh://git@github.com/org/repo.
     try {
       const parsed = new URL(trimmed);
-      const path = parsed.pathname.replace(/^\/+|\/+$/g, '');
-      if (parsed.hostname && path) {
-        return `${parsed.hostname}/${path}`;
+      if (
+        ['https:', 'ssh:', 'git:'].includes(parsed.protocol) &&
+        !parsed.search &&
+        !parsed.hash
+      ) {
+        host = parsed.hostname;
+        path = parsed.pathname;
       }
     } catch {
       // Malformed URL; fall through to the error below.
@@ -79,8 +86,18 @@ export function parseRepositoryUrl(url, remote = 'origin') {
     // The scp-like syntax git also allows: git@github.com:org/repo.
     const scp = trimmed.match(/^(?:[^@]+@)?([^:/]+):(.+)$/);
     if (scp) {
-      return `${scp[1]}/${scp[2].replace(/^\/+/, '')}`;
+      host = scp[1];
+      path = scp[2];
     }
+  }
+
+  path = path?.replace(/^\/+|\/+$/g, '').replace(/\.git$/, '');
+  if (
+    /^[a-z0-9.-]+$/i.test(host ?? '') &&
+    /^[a-z0-9_-]+\/[a-z0-9_.-]+$/i.test(path ?? '') &&
+    !['.', '..'].includes(path.split('/')[1])
+  ) {
+    return `${host.toLowerCase()}/${path}`;
   }
 
   throw new Error(
@@ -102,10 +119,16 @@ export function parseRepositoryUrl(url, remote = 'origin') {
  */
 export async function repositoryForRemote({ cwd, remote = 'origin' } = {}) {
   let url;
+  let pushUrls;
   try {
     ({ stdout: url } = await execFileAsync(
       'git',
       ['remote', 'get-url', remote],
+      { cwd },
+    ));
+    ({ stdout: pushUrls } = await execFileAsync(
+      'git',
+      ['remote', 'get-url', '--push', '--all', remote],
       { cwd },
     ));
   } catch {
@@ -113,7 +136,17 @@ export async function repositoryForRemote({ cwd, remote = 'origin' } = {}) {
       `remote "${remote}" is not configured; a pull request needs a GitHub remote.`,
     );
   }
-  return parseRepositoryUrl(url, remote);
+  const repo = parseRepositoryUrl(url, remote);
+  for (const pushUrl of pushUrls.trim().split('\n')) {
+    const pushRepo = parseRepositoryUrl(pushUrl, remote);
+    if (pushRepo.toLowerCase() !== repo.toLowerCase()) {
+      throw new Error(
+        `remote "${remote}" has different fetch and push repositories; ` +
+          'use a remote that fetches from and pushes to the same GitHub repository.',
+      );
+    }
+  }
+  return repo;
 }
 
 /**
@@ -184,7 +217,19 @@ export function createGithubForge({ cwd, remote = 'origin' } = {}) {
       // Settle which repository the pull request would go to as well, before
       // any branch is made: a remote we cannot name must stop the backport
       // here, not halfway through.
-      await repositoryForRemote({ cwd, remote });
+      const repo = await repositoryForRemote({ cwd, remote });
+      try {
+        // A GitHub-shaped URL is not proof that the host runs GitHub or that
+        // this login can access the repository. Ask its API before pushing.
+        await execFileAsync('gh', ['repo', 'view', repo, '--json', 'id'], {
+          cwd,
+        });
+      } catch {
+        throw new Error(
+          `remote "${remote}" must point to an accessible GitHub repository; ` +
+            `check ${repo} and your GitHub CLI login for its host.`,
+        );
+      }
     },
     createPullRequest: async (request) => {
       const repo = await repositoryForRemote({ cwd, remote });

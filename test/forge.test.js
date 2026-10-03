@@ -11,7 +11,8 @@ import {
   parseRepositoryUrl,
   preflight,
 } from '../src/forge/github.js';
-import { git, makeTempDir } from './helpers.js';
+import { backport } from '../src/commands/backport.js';
+import { git, makeTempDir, supportYaml } from './helpers.js';
 
 // The fake tool answers whatever the test asks it to, through environment
 // variables it inherits from this process.
@@ -27,6 +28,14 @@ case "$1" in
       echo "not logged in" >&2
       exit 1
     fi
+    exit 0
+    ;;
+  repo)
+    if [ -n "$LIFELINE_TEST_GH_REPO_FAIL" ]; then
+      echo "repository not accessible through GitHub API" >&2
+      exit 1
+    fi
+    echo '{"id":"R_test"}'
     exit 0
     ;;
   pr)
@@ -93,6 +102,7 @@ after(async () => {
   delete process.env.LIFELINE_TEST_GH_PR_URL;
   delete process.env.LIFELINE_TEST_GH_AUTH_FAIL;
   delete process.env.LIFELINE_TEST_GH_PR_FAIL;
+  delete process.env.LIFELINE_TEST_GH_REPO_FAIL;
 });
 
 describe('github forge preflight', () => {
@@ -205,6 +215,121 @@ describe('github forge pull requests', () => {
 });
 
 describe('binding pull requests to a remote', () => {
+  for (const host of ['github.com', 'github.example.com']) {
+    it(`checks repository access on ${host} during preflight`, async () => {
+      const cwd = await makeGitHubRepo();
+      await git(
+        ['remote', 'set-url', 'origin', `https://${host}/org/repo.git`],
+        cwd,
+      );
+      await git(
+        ['remote', 'set-url', '--push', 'origin', `git@${host}:org/repo.git`],
+        cwd,
+      );
+      await useFakeGh();
+
+      await createGithubForge({ cwd }).preflight();
+
+      const logged = (await readFile(logPath, 'utf8')).trim().split('\n');
+      assert.deepEqual(logged, [
+        '--version',
+        'auth status',
+        `repo view ${host}/org/repo --json id`,
+      ]);
+    });
+  }
+
+  const invalidRemotes = [
+    {
+      name: 'an unsupported host',
+      fetch: 'https://gitlab.com/org/repo.git',
+      apiFails: true,
+    },
+    { name: 'an inaccessible GitHub repository', apiFails: true },
+    {
+      name: 'a different push repository',
+      push: 'git@github.com:fork/one.git',
+    },
+    { name: 'a different push host', push: 'git@gitlab.com:org/one.git' },
+    {
+      name: 'an additional push destination',
+      push: 'git@github.com:fork/one.git',
+      additional: true,
+    },
+    { name: 'a local push destination', push: '/srv/mirror/repo.git' },
+  ];
+  for (const scenario of invalidRemotes) {
+    it(`rejects ${scenario.name} before backport creates or pushes a branch`, async () => {
+      const cwd = await makeGitHubRepo();
+      await writeFile(join(cwd, 'SUPPORT.yaml'), supportYaml());
+      if (scenario.fetch) {
+        await git(['remote', 'set-url', 'origin', scenario.fetch], cwd);
+      }
+      if (scenario.additional) {
+        await git(
+          [
+            'remote',
+            'set-url',
+            '--push',
+            'origin',
+            'git@github.com:org/one.git',
+          ],
+          cwd,
+        );
+      }
+      if (scenario.push) {
+        await git(
+          ['remote', 'set-url', '--push', '--add', 'origin', scenario.push],
+          cwd,
+        );
+      }
+      await useFakeGh();
+      if (scenario.apiFails) {
+        process.env.LIFELINE_TEST_GH_REPO_FAIL = '1';
+      }
+      const mutations = [];
+      try {
+        const result = await backport({
+          cwd,
+          forge: createGithubForge({ cwd }),
+          sha: 'abc1234',
+          to: '2.x',
+          git: {
+            isClean: async () => true,
+            commit: async () => ({
+              sha: 'abc1234',
+              shortSha: 'abc1234',
+              parents: ['def5678'],
+              subject: 'Fix',
+            }),
+            fetchRemote: async () => {},
+            branchExists: async () => true,
+            isAncestor: async () => true,
+            run: async (args) => {
+              mutations.push(args);
+              return '';
+            },
+          },
+        });
+
+        assert.equal(result.exitCode, 1);
+        assert.equal(result.pushed, false);
+        assert.match(
+          result.problems[0].message,
+          scenario.apiFails
+            ? /accessible GitHub repository/
+            : scenario.push.startsWith('/')
+              ? /not a repository URL/
+              : /different fetch and push repositories/,
+        );
+        assert.deepEqual(mutations, []);
+        assert.doesNotMatch(await readFile(logPath, 'utf8'), /pr create/);
+      } finally {
+        delete process.env.LIFELINE_TEST_GH_REPO_FAIL;
+      }
+    });
+  }
+
   it('names the repository the selected remote points at', async () => {
     const cwd = await makeGitHubRepo();
     await useFakeGh();
@@ -299,6 +424,19 @@ describe('reading a repository out of a remote URL', () => {
     assert.throws(() => parseRepositoryUrl('../sibling/repo'), {
       message: /not a repository URL/,
     });
+    for (const url of [
+      'file://github.com/org/repo',
+      'ftp://github.com/org/repo',
+      'https://github.com/org',
+      'https://github.com/org/repo/extra',
+      'git@github.com:org/repo/extra',
+      'https://github.com/org/repo?ref=main',
+      'https://github.com/org/repo#main',
+    ]) {
+      assert.throws(() => parseRepositoryUrl(url), {
+        message: /not a repository URL/,
+      });
+    }
     assert.throws(() => parseRepositoryUrl(''), {
       message: /not a repository URL/,
     });
