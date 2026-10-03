@@ -146,18 +146,43 @@ test('an unknown flag exits 2', async () => {
 });
 
 test('status shows whether each branch exists', async () => {
-  const { stdout } = await lifeline(['status', '--json']);
-  assert.equal(JSON.parse(stdout).rows[0].exists, true, 'devel exists here');
+  // A throwaway repository, not this one: what branches a checkout happens to
+  // have (a bare pull request checkout has none) is not ours to depend on.
+  // 2.x is in Active Support but its branch has not been cut yet.
+  const repo = await makeGitRepo({
+    support: supportYaml([
+      { version: '2.x', stage: 'as' },
+      { version: '0.x', stage: 'indev' },
+    ]),
+  });
+
+  const { stdout } = await lifeline(['status', '--cwd', repo.cwd, '--json']);
+  const rows = JSON.parse(stdout).rows;
+  assert.equal(rows[0].version, '2.x');
+  assert.equal(rows[0].branch, 'as/v2.x');
+  assert.equal(rows[0].exists, false, 'as/v2.x has not been created');
+  assert.equal(rows[1].version, '0.x');
+  assert.equal(rows[1].branch, 'devel');
+  assert.equal(rows[1].exists, true, 'devel exists here');
 
   const cwd = await makeTempDir();
   const empty = await lifeline(['status', '--cwd', cwd, '--json']);
   assert.equal(JSON.parse(empty.stdout).rows.length, 0);
 });
 
-test('check passes on this repository', async () => {
-  const { code, stdout } = await lifeline(['check']);
-  assert.equal(code, 0);
-  assert.match(stdout, /^OK: /);
+test('check passes when the file and the branches agree', async () => {
+  const repo = await makeGitRepo({
+    branches: ['as/v2.x', 'ls/v1.x'],
+    support: supportYaml([
+      { version: '2.x', stage: 'as' },
+      { version: '1.x', stage: 'ls', eol: '2099-01-01' },
+    ]),
+  });
+
+  const { code, stdout, stderr } = await lifeline(['check', '--cwd', repo.cwd]);
+  assert.equal(code, 0, stderr);
+  assert.equal(stderr, '');
+  assert.match(stdout, /^OK: 2 lines, 3 branches\./);
 });
 
 test('check prints problems on stderr and exits 1', async () => {
