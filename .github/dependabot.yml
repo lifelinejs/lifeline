@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'daily'
+    labels:
+      - 'area: dependencies'
+      - 'type: chore'
+    assignees:
+      - 'kamixfox'
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'daily'
+    labels:
+      - 'ci: github actions'
+      - 'type: chore'
+    assignees:
+      - 'kamixfox'
