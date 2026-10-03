@@ -243,7 +243,21 @@ test('check --json always prints, even when the file is broken', async () => {
 });
 
 test('check --fetch is accepted and reported in the output', async () => {
-  const { code, stdout } = await lifeline(['check', '--fetch', '--json']);
+  // Its own throwaway repository with its own origin, so --fetch never
+  // touches the remote of the checkout these tests are run from.
+  const repo = await makeGitRepo({
+    branches: ['as/v2.x'],
+    support: supportYaml([{ version: '2.x', stage: 'as' }]),
+    withRemote: true,
+  });
+
+  const { code, stdout } = await lifeline([
+    'check',
+    '--fetch',
+    '--json',
+    '--cwd',
+    repo.cwd,
+  ]);
   assert.equal(code, 0);
   assert.equal(JSON.parse(stdout).fetched, true);
 });
