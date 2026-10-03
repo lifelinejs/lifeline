@@ -14,6 +14,7 @@ import {
   fetchFirst,
   gitMessage,
   readSupport,
+  remoteRefExists,
   writeMovedLine,
 } from './support-ops.js';
 
@@ -110,7 +111,27 @@ export async function promote({
     });
   }
 
-  const branchExisted = await git.branchExists(plan.branch);
+  // The push below targets the remote, so ask the remote whether the branch
+  // is already there. Checking an unqualified name would look at this
+  // checkout instead: a branch that exists only on the remote would slip past
+  // the refusal, and one that exists only here would skip the push that is
+  // needed to create it.
+  let branchExisted;
+  try {
+    branchExisted = await remoteRefExists({
+      git,
+      remote,
+      kind: 'heads',
+      name: plan.branch,
+    });
+  } catch (lsError) {
+    return result(plan, {
+      problems: [
+        error(`git ls-remote ${remote} failed: ${gitMessage(lsError)}`),
+      ],
+      exitCode: 1,
+    });
+  }
   if (branchExisted && !force) {
     return result(plan, {
       branchExisted,

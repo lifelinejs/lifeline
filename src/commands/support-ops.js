@@ -67,6 +67,30 @@ export async function fetchFirst({ git, remote }) {
 }
 
 /**
+ * Does the remote have this branch or tag?
+ *
+ * `git ls-remote --heads|--tags` asks the remote itself for the exact ref, so
+ * the answer cannot be fooled by a local branch with the same name, nor by a
+ * remote-tracking ref left behind by an earlier fetch. Lifecycle commands
+ * mutate the remote, so their existence checks have to be about the remote.
+ *
+ * @param {object} options
+ * @param {import('../git/git.js').Git} options.git
+ * @param {string} options.remote
+ * @param {'heads' | 'tags'} options.kind
+ * @param {string} options.name Branch or tag name, e.g. "el/v1.x".
+ * @returns {Promise<boolean>} True when the remote returns that ref.
+ * @throws {Error} When the remote cannot be asked; callers report it rather
+ *   than guessing, because a wrong answer here either skips a push that was
+ *   needed or walks over a ref that was not ours to touch.
+ */
+export async function remoteRefExists({ git, remote, kind, name }) {
+  const ref = `refs/${kind}/${name}`;
+  const output = await git.run(['ls-remote', `--${kind}`, remote, ref]);
+  return output.split('\n').some((line) => line.trim().split(/\s+/)[1] === ref);
+}
+
+/**
  * Write SUPPORT.yaml with `line` moved to its new stage.
  *
  * The file is rendered from scratch, so it comes back in Lifeline's canonical

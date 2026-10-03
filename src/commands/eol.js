@@ -15,6 +15,7 @@ import {
   fetchFirst,
   gitMessage,
   readSupport,
+  remoteRefExists,
   writeMovedLine,
 } from './support-ops.js';
 
@@ -100,19 +101,35 @@ export async function eol({
     });
   }
 
-  const branchExisted = await git.branchExists(plan.branch);
-  // The tag is made on the remote, so ask the remote whether it is already
-  // there: the local `git tag` list says nothing about the ref that matters.
-  let tagExisted;
+  // Both refs are made on the remote, so ask the remote about both. An
+  // unqualified name would check this checkout instead: a branch or tag that
+  // exists only on the remote would slip past the refusal, and one that
+  // exists only here would skip the push that is needed to create it there.
+  // A lookup that cannot be answered stops the command: guessing here would
+  // either push over a ref that is not ours or skip a push that is needed.
+  let branchExisted = false;
+  let tagExisted = false;
+  let asked = '';
   try {
-    tagExisted = await remoteTagExists({ git, remote, tag: plan.tag });
-  } catch (lookupError) {
+    asked = `--heads ${remote} refs/heads/${plan.branch}`;
+    branchExisted = await remoteRefExists({
+      git,
+      remote,
+      kind: 'heads',
+      name: plan.branch,
+    });
+    asked = `--tags ${remote} refs/tags/${plan.tag}`;
+    tagExisted = await remoteRefExists({
+      git,
+      remote,
+      kind: 'tags',
+      name: plan.tag,
+    });
+  } catch (lsError) {
     return result(plan, {
       branchExisted,
       problems: [
-        error(
-          `git ls-remote --tags ${remote} refs/tags/${plan.tag} failed: ${gitMessage(lookupError)}`,
-        ),
+        error(`git ls-remote ${asked} failed: ${gitMessage(lsError)}`),
       ],
       exitCode: 1,
     });
@@ -270,31 +287,6 @@ function nextSteps(plan, { dryRun, write, branchExisted, tagExisted, pushed }) {
     'Run "lifeline check" to confirm the file and the branches agree.',
   );
   return steps;
-}
-
-/**
- * Is `<tag>` already on the remote?
- *
- * `git ls-remote --tags` is asked for the exact `refs/tags/<tag>` ref, so the
- * answer comes from the remote itself rather than from whatever this checkout
- * happens to have fetched.
- *
- * @param {object} options
- * @param {import('../git/git.js').Git} options.git
- * @param {string} options.remote
- * @param {string} options.tag
- * @returns {Promise<boolean>} True when the remote returns that ref.
- */
-async function remoteTagExists({ git, remote, tag }) {
-  const ref = `refs/tags/${tag}`;
-  const output = await git.run(['ls-remote', '--tags', remote, ref]);
-  return (
-    output
-      .split('\n')
-      .map((line) => line.trim().split(/\s+/)[1])
-      // Exact match, so a peeled `^{}` line or another ref never counts.
-      .some((name) => name === ref)
-  );
 }
 
 /**

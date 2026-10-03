@@ -190,7 +190,9 @@ describe('eol refusals', () => {
           ...realGit,
           run: async (args) => {
             calls.push(args);
-            if (args[0] === 'ls-remote') {
+            // Only the tag lookup fails - the scenario this test is about;
+            // the branch lookup still answers.
+            if (args[0] === 'ls-remote' && args.includes('--tags')) {
               throw Object.assign(new Error('Command failed'), {
                 stderr: 'remote lookup unavailable\n',
               });
@@ -325,6 +327,32 @@ describe('eol with refs that already exist', () => {
 
     assert.equal(refused.exitCode, 1);
     assert.match(refused.problems[0].message, /v1\.x-eol already exists/);
+  });
+
+  it('refuses an el branch that exists only on the remote', async () => {
+    const cwd = await setup();
+    // The freeze branch was pushed by someone else; this checkout never saw it.
+    await git(['branch', 'el/v1.x'], cwd);
+    await git(['push', 'origin', 'el/v1.x'], cwd);
+    await git(['branch', '-D', 'el/v1.x'], cwd);
+
+    const result = await run(cwd, { date: '2027-02-01' });
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.problems[0].message, /el\/v1\.x already exists/);
+    assert.match(result.problems[0].message, /--force/);
+  });
+
+  it('freezes on the remote even when only this checkout has the branch', async () => {
+    const cwd = await setup();
+    await git(['branch', 'el/v1.x'], cwd); // local only: the remote has none
+
+    const result = await run(cwd, { date: '2027-02-01', force: true });
+
+    assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+    assert.equal(result.branchExisted, false);
+    assert.match(await remoteRefs(cwd), /refs\/heads\/el\/v1\.x$/m);
+    assert.match(await remoteRefs(cwd), /refs\/tags\/v1\.x-eol$/m);
   });
 
   it('ignores a tag that exists only in this checkout', async () => {

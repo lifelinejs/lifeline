@@ -249,4 +249,30 @@ describe('promote refusals', () => {
     assert.equal(forced.pushed, false);
     assert.match(await readSupportFile(cwd), /stage: as/);
   });
+
+  it('refuses a branch that exists only on the remote', async () => {
+    const cwd = await setup();
+    // Somebody else created as/v3.x on the remote; this checkout never saw it.
+    await git(['branch', 'as/v3.x'], cwd);
+    await git(['push', 'origin', 'as/v3.x'], cwd);
+    await git(['branch', '-D', 'as/v3.x'], cwd);
+
+    const result = await run(cwd);
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.problems[0].message, /as\/v3\.x already exists/);
+    assert.match(result.problems[0].message, /--force/);
+  });
+
+  it('pushes the branch even when only this checkout has one', async () => {
+    const cwd = await setup();
+    await git(['branch', 'as/v3.x'], cwd); // local only: the remote has none
+
+    const result = await run(cwd, { force: true, write: true });
+
+    assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+    assert.equal(result.pushed, true);
+    assert.match(await remoteRefs(cwd), /refs\/heads\/as\/v3\.x$/m);
+    assert.match(await readSupportFile(cwd), /stage: as/);
+  });
 });
