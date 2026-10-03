@@ -243,24 +243,32 @@ export async function eol({
   let written = false;
   let path = null;
   if (write) {
+    let move;
     try {
-      path = await writeMovedLine({
+      move = await writeMovedLine({
         cwd,
-        lines: support.lines,
+        expectedLines: support.lines,
         version: plan.version,
         stage: plan.to,
         eol: plan.line.eol,
       });
-      written = true;
     } catch (writeError) {
+      move = {
+        path: null,
+        problems: [
+          error(`Could not write SUPPORT.yaml: ${writeError.message}`),
+        ],
+      };
+    }
+    path = move.path;
+    written = move.path !== null;
+    if (move.problems.length > 0) {
+      // The freeze may already be pushed, so say what did happen.
       return result(plan, {
         pushed,
         branchExisted,
         tagExisted,
-        problems: [
-          error(`Could not write SUPPORT.yaml: ${writeError.message}`),
-          ...disagreements,
-        ],
+        problems: [...move.problems, ...disagreements],
         steps: nextSteps(plan, {
           dryRun: false,
           write: false,

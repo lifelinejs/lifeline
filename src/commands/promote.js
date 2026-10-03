@@ -174,23 +174,31 @@ export async function promote({
   let written = false;
   let path = null;
   if (write) {
+    let move;
     try {
-      path = await writeMovedLine({
+      move = await writeMovedLine({
         cwd,
-        lines: support.lines,
+        expectedLines: support.lines,
         version: plan.version,
         stage: plan.to,
         eol: plan.line.eol,
       });
-      written = true;
     } catch (writeError) {
+      move = {
+        path: null,
+        problems: [
+          error(`Could not write SUPPORT.yaml: ${writeError.message}`),
+        ],
+      };
+    }
+    path = move.path;
+    written = move.path !== null;
+    if (move.problems.length > 0) {
       // The branch may already be pushed, so say what did happen.
       return result(plan, {
         pushed,
         branchExisted,
-        problems: [
-          error(`Could not write SUPPORT.yaml: ${writeError.message}`),
-        ],
+        problems: move.problems,
         steps: nextSteps(plan, {
           dryRun: false,
           write: false,

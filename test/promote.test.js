@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 
 import { promote } from '../src/commands/promote.js';
 import { createGit } from '../src/git/git.js';
-import { git, makeGitRepo, supportYaml } from './helpers.js';
+import { commitFiles, git, makeGitRepo, supportYaml } from './helpers.js';
 
 /**
  * A repository with a remote and one line in development.
@@ -51,6 +51,19 @@ async function remoteRefs(cwd) {
 async function readSupportFile(cwd) {
   const { readFile } = await import('node:fs/promises');
   return readFile(`${cwd}/SUPPORT.yaml`, 'utf8');
+}
+
+/**
+ * The real git for this repository, except that the fetch is where another
+ * lifecycle command gets in: `promote` reads SUPPORT.yaml before it fetches,
+ * and writes it after, so this is the window the file can change in.
+ *
+ * @param {string} cwd
+ * @param {() => Promise<void>} duringFetch What the other command does.
+ * @returns {import('../src/git/git.js').Git}
+ */
+function gitWithAnotherCommand(cwd, duringFetch) {
+  return { ...createGit({ cwd, remote: 'origin' }), fetchRemote: duringFetch };
 }
 
 describe('promote indev -> as', () => {
@@ -274,5 +287,88 @@ describe('promote refusals', () => {
     assert.equal(result.pushed, true);
     assert.match(await remoteRefs(cwd), /refs\/heads\/as\/v3\.x$/m);
     assert.match(await readSupportFile(cwd), /stage: as/);
+  });
+});
+
+describe('promote alongside another lifecycle command', () => {
+  const twoLines = supportYaml([
+    { version: '1.x', stage: 'ls', eol: '2027-01-01' },
+    { version: '3.x', stage: 'indev' },
+  ]);
+
+  it('does not put another line back where it was', async () => {
+    const cwd = await setup({ support: twoLines, branches: ['ls/v1.x'] });
+
+    const result = await run(cwd, {
+      write: true,
+      // Another command ends 1.x and commits it, all while this promotion is
+      // fetching. Rendering the file from the snapshot taken before the fetch
+      // would set 1.x back to ls, and backports to an ended line would be
+      // allowed again.
+      git: gitWithAnotherCommand(cwd, () =>
+        commitFiles(
+          cwd,
+          {
+            'SUPPORT.yaml':
+              '# yaml-language-server: $schema=example\n' +
+              'lines:\n' +
+              '  - version: "1.x"\n' +
+              '    stage: el\n' +
+              '    eol: 2027-02-01\n' +
+              '  - version: "3.x"\n' +
+              '    stage: indev\n',
+          },
+          'chore: end 1.x',
+        ),
+      ),
+    });
+
+    assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+    assert.equal(result.written, true);
+
+    const text = await readSupportFile(cwd);
+    assert.match(text, /version: "1\.x"\n {4}stage: el\n {4}eol: 2027-02-01/);
+    assert.match(text, /version: "3\.x"\n {4}stage: as/);
+  });
+
+  it('writes nothing when the line it is promoting has moved on', async () => {
+    const cwd = await setup({ support: twoLines, branches: ['ls/v1.x'] });
+
+    const result = await run(cwd, {
+      write: true,
+      // Somebody moves 3.x on by hand and commits, mid-run.
+      git: gitWithAnotherCommand(cwd, () =>
+        commitFiles(
+          cwd,
+          {
+            'SUPPORT.yaml':
+              '# a note Lifeline would not write\n' +
+              'lines:\n' +
+              '  - version: "1.x"\n' +
+              '    stage: ls\n' +
+              '    eol: 2027-01-01\n' +
+              '  - version: "3.x"\n' +
+              '    stage: ls\n' +
+              '    eol: 2028-01-01\n',
+          },
+          'chore: 3.x is further along',
+        ),
+      ),
+    });
+
+    // The branch is pushed, because that half of the promotion is still right;
+    // the file is left for the user to look at.
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.pushed, true);
+    assert.equal(result.written, false);
+    assert.equal(result.path, null);
+    assert.match(result.problems[0].message, /3\.x is ls with eol 2028-01-01/);
+    assert.match(result.problems[0].message, /nothing was written/);
+    assert.match(result.steps.join('\n'), /Set 3\.x to as in SUPPORT\.yaml/);
+
+    // Untouched: the note Lifeline would have dropped is still there.
+    const text = await readSupportFile(cwd);
+    assert.match(text, /# a note Lifeline would not write/);
+    assert.match(text, /eol: 2028-01-01/);
   });
 });

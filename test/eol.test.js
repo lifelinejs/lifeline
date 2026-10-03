@@ -69,6 +69,19 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * The real git for this repository, except that the fetch is where another
+ * lifecycle command gets in: `eol` reads SUPPORT.yaml before it fetches, and
+ * writes it after, so this is the window the file can change in.
+ *
+ * @param {string} cwd
+ * @param {() => Promise<void>} duringFetch What the other command does.
+ * @returns {import('../src/git/git.js').Git}
+ */
+function gitWithAnotherCommand(cwd, duringFetch) {
+  return { ...createGit({ cwd, remote: 'origin' }), fetchRemote: duringFetch };
+}
+
 describe('eol happy path', () => {
   it('freezes the line, tags it, and rewrites SUPPORT.yaml', async () => {
     const cwd = await setup();
@@ -530,5 +543,96 @@ describe('eol keeps one freeze snapshot', () => {
       .split('\n')
       .find((line) => line.includes('refs/heads/el/v1.x'));
     assert.equal(branch.split(' ')[0], frozen);
+  });
+});
+
+describe('eol alongside another lifecycle command', () => {
+  const twoLines = supportYaml([
+    { version: '1.x', stage: 'ls', eol: '2027-01-01' },
+    { version: '2.x', stage: 'as' },
+  ]);
+
+  it('does not put another line back where it was', async () => {
+    const cwd = await setup({
+      support: twoLines,
+      branches: ['ls/v1.x', 'as/v2.x'],
+    });
+
+    const result = await run(cwd, {
+      date: '2027-02-01',
+      write: true,
+      // Another command graduates 2.x and commits it, while this freeze is
+      // fetching. Writing 1.x from the snapshot taken before the fetch would
+      // set 2.x back to as.
+      git: gitWithAnotherCommand(cwd, () =>
+        commitFiles(
+          cwd,
+          {
+            'SUPPORT.yaml':
+              '# yaml-language-server: $schema=example\n' +
+              'lines:\n' +
+              '  - version: "1.x"\n' +
+              '    stage: ls\n' +
+              '    eol: 2027-01-01\n' +
+              '  - version: "2.x"\n' +
+              '    stage: ls\n' +
+              '    eol: 2028-01-01\n',
+          },
+          'chore: 2.x is in life support',
+        ),
+      ),
+    });
+
+    assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+    assert.equal(result.pushed, true);
+    assert.equal(result.written, true);
+
+    const text = await readSupportFile(cwd);
+    assert.match(text, /version: "1\.x"\n {4}stage: el\n {4}eol: 2027-02-01/);
+    assert.match(text, /version: "2\.x"\n {4}stage: ls\n {4}eol: 2028-01-01/);
+  });
+
+  it('writes nothing when the line it is ending has already ended', async () => {
+    const cwd = await setup({
+      support: twoLines,
+      branches: ['ls/v1.x', 'as/v2.x'],
+    });
+
+    const result = await run(cwd, {
+      date: '2027-02-01',
+      write: true,
+      // The line reaches End of Life by another route while this run is
+      // fetching, with a date of its own.
+      git: gitWithAnotherCommand(cwd, () =>
+        commitFiles(
+          cwd,
+          {
+            'SUPPORT.yaml':
+              '# a note Lifeline would not write\n' +
+              'lines:\n' +
+              '  - version: "1.x"\n' +
+              '    stage: el\n' +
+              '    eol: 2027-03-01\n' +
+              '  - version: "2.x"\n' +
+              '    stage: as\n',
+          },
+          'chore: 1.x ended',
+        ),
+      ),
+    });
+
+    // The freeze is still published: the code has to be kept either way. The
+    // file is not rewritten over the transition that is already there.
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.pushed, true);
+    assert.equal(result.written, false);
+    assert.equal(result.path, null);
+    assert.match(result.problems[0].message, /1\.x is el with eol 2027-03-01/);
+    assert.match(result.problems[0].message, /nothing was written/);
+
+    const text = await readSupportFile(cwd);
+    assert.match(text, /# a note Lifeline would not write/);
+    assert.match(text, /eol: 2027-03-01/);
+    assert.doesNotMatch(text, /eol: 2027-02-01/);
   });
 });

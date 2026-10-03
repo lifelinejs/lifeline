@@ -112,26 +112,107 @@ export async function remoteRef({ git, remote, kind, name }) {
 }
 
 /**
- * Write SUPPORT.yaml with `line` moved to its new stage.
+ * Write SUPPORT.yaml with one line moved to its new stage.
+ *
+ * The file is read here, not taken from the snapshot the plan was built on.
+ * Between that read and this write a command has fetched, asked the remote
+ * about refs and pushed, which is long enough for another lifecycle command in
+ * the same checkout to have moved a line of its own. Rendering the file from
+ * the snapshot would put that line back where it was, and for a line that has
+ * reached End of Life that means backports to it are allowed again. So the
+ * transition is applied to what is on disk now, and every other line is left as
+ * it is found.
+ *
+ * The line being moved is also compared with the snapshot. If it is no longer
+ * where the plan found it, the push this write was to record has been overtaken
+ * and nothing is written: the run says so instead.
  *
  * The file is rendered from scratch, so it comes back in Lifeline's canonical
  * shape. Comments and any key Lifeline does not know about do not survive.
  *
  * @param {object} options
  * @param {string} options.cwd
- * @param {import('../core/support.js').Line[]} options.lines All the lines.
+ * @param {import('../core/support.js').Line[]} options.expectedLines The lines
+ *   as the plan read them: what this write expects to still be there.
  * @param {string} options.version The line to move.
  * @param {string} options.stage Where it moved to.
  * @param {string} [options.eol] Its end-of-life date, when it has one.
- * @returns {Promise<string>} The path written to.
+ * @returns {Promise<{path: string | null,
+ *   problems: import('../core/problems.js').Problem[]}>} The path written to, or
+ *   null with problems when the file changed underneath and nothing was
+ *   written.
  */
-export async function writeMovedLine({ cwd, lines, version, stage, eol }) {
-  const updated = lines.map((line) =>
+export async function writeMovedLine({
+  cwd,
+  expectedLines,
+  version,
+  stage,
+  eol,
+}) {
+  const current = await readSupport(cwd);
+  if (!current.ok) {
+    return { path: null, problems: current.problems };
+  }
+
+  const overtaken = overtakenBy(expectedLines, current.lines, version);
+  if (overtaken) {
+    return { path: null, problems: [overtaken] };
+  }
+
+  const updated = current.lines.map((line) =>
     line.version === version
       ? { version: line.version, stage, eol, components: line.components }
       : line,
   );
-  return writeSupport(cwd, renderSupportFile(updated));
+  return {
+    path: await writeSupport(cwd, renderSupportFile(updated)),
+    problems: [],
+  };
+}
+
+/**
+ * Say that this write has been overtaken, or null when it has not.
+ *
+ * Only the two fields the transition depends on are compared. The stage says
+ * whether this is still the move the plan made, and the date says which
+ * end-of-life the file will record; anything else about the line is carried
+ * over from what is on disk, so editing it does not stop the write.
+ *
+ * @param {import('../core/support.js').Line[]} expected
+ * @param {import('../core/support.js').Line[]} current
+ * @param {string} version
+ * @returns {import('../core/problems.js').Problem | null}
+ */
+function overtakenBy(expected, current, version) {
+  const now = current.find((line) => line.version === version);
+  if (!now) {
+    return error(
+      `${version} is no longer listed in SUPPORT.yaml; the file changed while this command was running, so nothing was written.`,
+    );
+  }
+
+  const then = expected.find((line) => line.version === version);
+  if (!then) {
+    return null;
+  }
+  if (then.stage === now.stage && (then.eol ?? null) === (now.eol ?? null)) {
+    return null;
+  }
+  return error(
+    `${describeLine(now)} in SUPPORT.yaml, not ${describeLine(then)} as this command expected; ` +
+      'the file changed while this command was running, so nothing was written. ' +
+      'Look at it, then run the command again.',
+  );
+}
+
+/**
+ * A line the way a message names it: "1.x is ls with eol 2027-01-01".
+ * @param {import('../core/support.js').Line} line
+ * @returns {string}
+ */
+function describeLine(line) {
+  const ended = line.eol ? ` with eol ${line.eol}` : '';
+  return `${line.version} is ${line.stage}${ended}`;
 }
 
 /**
