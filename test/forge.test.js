@@ -306,7 +306,11 @@ describe('binding pull requests to a remote', () => {
             branchExists: async () => true,
             isAncestor: async () => true,
             run: async (args) => {
-              mutations.push(args);
+              // ls-remote only asks the remote a question; what this test is
+              // about is that nothing is created or pushed.
+              if (args[0] !== 'ls-remote') {
+                mutations.push(args);
+              }
               return '';
             },
           },

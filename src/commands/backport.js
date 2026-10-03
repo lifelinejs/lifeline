@@ -7,6 +7,7 @@
 import { planBackport, resolveTarget } from '../core/backport.js';
 import { error, warning } from '../core/problems.js';
 import { normalizeLine } from '../core/stages.js';
+import { branchAhead } from './support-ops.js';
 import { loadSupport } from '../support-file.js';
 
 /**
@@ -132,6 +133,42 @@ export async function backport({
         1,
       );
     }
+  }
+
+  // The file says which stage the line is in, but a transition pushes the
+  // branch that marks the new stage before it records that stage: if the write
+  // is overtaken, refused or cut short, SUPPORT.yaml is still at the stage the
+  // line has already left. Going on the file's word alone would keep fixes
+  // flowing to a line that has ended, or skip the label a Life Support line
+  // needs, until somebody reconciled the file. So the remote is asked as well,
+  // and where the two disagree the further stage stands.
+  let ahead;
+  try {
+    ahead = await branchAhead({
+      git,
+      remote,
+      version: target.version,
+      stage: target.stage,
+    });
+  } catch (lsError) {
+    return stopped(
+      null,
+      [error(`git ls-remote ${remote} failed: ${gitMessage(lsError)}`)],
+      1,
+    );
+  }
+  if (ahead) {
+    return stopped(
+      null,
+      [
+        error(
+          `${remote}/${ahead} exists, but SUPPORT.yaml still says ${target.version} is ${target.stage}; ` +
+            'the file is behind the remote, so nothing was pushed. ' +
+            'Run "lifeline check" to see what disagrees, and reconcile the file before backporting.',
+        ),
+      ],
+      1,
+    );
   }
 
   // A fix belongs on the development branch before it can travel anywhere.

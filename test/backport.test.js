@@ -383,6 +383,101 @@ describe('backport life support labels', () => {
   });
 });
 
+describe('backport when SUPPORT.yaml is behind the remote', () => {
+  it('refuses a line the remote has already ended', async () => {
+    // `lifeline eol` pushes el/v1.x and the tag before it writes the file, so
+    // this is what a write that is overtaken or cut short leaves behind: the
+    // remote froze the line and the file still calls it Life Support. Going on
+    // the file alone would keep fixes going to a line that has ended.
+    const { cwd, sha } = await setup({
+      support: supportYaml([
+        { version: '1.x', stage: 'ls', eol: '2027-01-01' },
+      ]),
+      branches: ['ls/v1.x'],
+    });
+    await git(['branch', 'el/v1.x', 'ls/v1.x'], cwd);
+    await git(['push', 'origin', 'el/v1.x'], cwd);
+    await git(['tag', 'v1.x-eol'], cwd);
+    await git(['push', 'origin', 'v1.x-eol'], cwd);
+
+    const { result, forge } = await run(cwd, {
+      overrides: { sha, label: 'security' },
+    });
+
+    assert.equal(result.exitCode, 1);
+    assert.match(
+      result.problems[0].message,
+      /origin\/el\/v1\.x exists, but SUPPORT\.yaml still says 1\.x is ls/,
+    );
+    assert.match(result.problems[0].message, /nothing was pushed/);
+
+    // Nothing was pushed and no pull request was opened: the freeze stands.
+    assert.equal(result.done, false);
+    assert.equal(result.pushed, false);
+    assert.deepEqual(forge.calls, []);
+    assert.doesNotMatch(
+      await git(['ls-remote', '--heads', 'origin'], cwd),
+      /backport/,
+    );
+  });
+
+  it('refuses a line the remote has moved to life support', async () => {
+    // The same drift one stage earlier: `promote` pushed ls/v1.x and the file
+    // still says Active Support, so the backport would land without the label a
+    // life support line needs.
+    const { cwd, sha } = await setup();
+    await git(['branch', 'ls/v1.x', 'as/v1.x'], cwd);
+    await git(['push', 'origin', 'ls/v1.x'], cwd);
+
+    const { result } = await run(cwd, { overrides: { sha } });
+
+    assert.equal(result.exitCode, 1);
+    assert.match(
+      result.problems[0].message,
+      /origin\/ls\/v1\.x exists, but SUPPORT\.yaml still says 1\.x is as/,
+    );
+  });
+
+  it('ignores a branch that exists only in this checkout', async () => {
+    // The answer has to be about the remote: a local el/v1.x is nobody's record
+    // of the line having ended, and a local ls/v1.x of it reaching life support.
+    const { cwd, sha } = await setup({
+      support: supportYaml([{ version: '1.x', stage: 'ls' }]),
+      branches: ['ls/v1.x'],
+    });
+    await git(['branch', 'el/v1.x', 'ls/v1.x'], cwd);
+
+    const { result } = await run(cwd, {
+      overrides: { sha, label: 'security' },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.pushed, true);
+    assert.deepEqual(result.problems, []);
+  });
+
+  it('says so on a dry run too, which does not fetch', async () => {
+    // Nothing is pushed either way, but a plan that would be refused is not
+    // worth handing out: the question is asked of the remote, which needs no
+    // fetch to answer.
+    const { cwd, sha } = await setup({
+      support: supportYaml([
+        { version: '1.x', stage: 'ls', eol: '2027-01-01' },
+      ]),
+      branches: ['ls/v1.x'],
+    });
+    await git(['branch', 'el/v1.x', 'ls/v1.x'], cwd);
+    await git(['push', 'origin', 'el/v1.x'], cwd);
+
+    const { result } = await run(cwd, {
+      overrides: { sha, label: 'security', dryRun: true },
+    });
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.problems[0].message, /origin\/el\/v1\.x exists/);
+  });
+});
+
 describe('backport conflicts', () => {
   it('lists the files and the next steps, and leaves the state to fix', async () => {
     const { cwd, sha } = await setup({

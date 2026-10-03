@@ -1,12 +1,14 @@
-// The file and git steps that `promote` and `eol` both need.
+// The file and git steps the commands that act on a release line share.
 //
-// Both commands do the same three things before they touch anything: read
+// `promote` and `eol` do the same three things before they touch anything: read
 // SUPPORT.yaml, insist on a clean tree, and fetch so the branches they ask
 // about are the ones the remote really has. That lives here once, so the two
-// commands are left with only the parts that differ.
+// commands are left with only the parts that differ. `backport` borrows the
+// remote question, since it acts on a line too.
 
 import { error } from '../core/problems.js';
 import { duplicateProblem } from '../core/support.js';
+import { STAGES, stageIndex } from '../core/stages.js';
 import {
   loadSupport,
   renderSupportFile,
@@ -14,6 +16,9 @@ import {
   withSupportLock,
   writeSupport,
 } from '../support-file.js';
+
+/** The prefix `ls-remote` prints a branch ref with. */
+const HEADS_PREFIX = 'refs/heads/';
 
 /**
  * Read SUPPORT.yaml for a command that is about to change it.
@@ -114,6 +119,62 @@ export async function remoteRef({ git, remote, kind, name }) {
     }
   }
   return sha === null ? null : { sha, peeled };
+}
+
+/**
+ * Ask the remote how far a line has moved, since it publishes refs first.
+ *
+ * `promote` and `eol` push the branch that marks the new stage before they
+ * record it in SUPPORT.yaml, so a write that is overtaken, refused or cut short
+ * leaves the file at an earlier stage than the remote has reached. `lifeline
+ * check` reports that drift; this is how a command that is about to act on the
+ * line asks the remote instead of taking the file's word for it.
+ *
+ * The question is put to the remote for the same reason `remoteRef` puts its
+ * questions there: a branch of the same name in this checkout, or a
+ * remote-tracking ref an earlier fetch left behind, is no evidence of what the
+ * remote has now. Unlike the fetch, `ls-remote` changes nothing, so this is
+ * asked on a dry run too.
+ *
+ * @param {object} options
+ * @param {import('../git/git.js').Git} options.git
+ * @param {string} options.remote
+ * @param {string} options.version Normalized version, e.g. "1.x".
+ * @param {string} options.stage The stage the file puts the line in.
+ * @returns {Promise<string | null>} The support branch the remote has that is
+ *   further along than `stage`, e.g. "el/v1.x", or null when the remote has not
+ *   moved past it. Only the furthest one is returned: what matters is how far
+ *   the line has gone, not how many stages it skipped.
+ * @throws {Error} When the remote cannot be asked; callers report that rather
+ *   than carry on, since the whole point is to not act on the file alone.
+ */
+export async function branchAhead({ git, remote, version, stage }) {
+  const ahead = STAGES.slice(stageIndex(stage) + 1);
+  if (ahead.length === 0) {
+    return null;
+  }
+  const names = ahead.map((later) => `${later}/v${version}`);
+  const output = await git.run([
+    'ls-remote',
+    '--heads',
+    remote,
+    ...names.map((name) => `refs/heads/${name}`),
+  ]);
+
+  let found = null;
+  let furthest = -1;
+  for (const line of output.split('\n')) {
+    const [object, refName] = line.trim().split(/\s+/);
+    if (!object || !refName || !refName.startsWith(HEADS_PREFIX)) {
+      continue;
+    }
+    const index = names.indexOf(refName.slice(HEADS_PREFIX.length));
+    if (index > furthest) {
+      furthest = index;
+      found = names[index];
+    }
+  }
+  return found;
 }
 
 /**
