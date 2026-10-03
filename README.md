@@ -35,7 +35,7 @@ lifeline status
 
 ## ⬇️ Installation
 
-**Prerequisites:** At least Node.js v22 ([Download](https://nodejs.org/en/download)), and the `gh` CLI installed ([Download](https://cli.github.com/)).
+**Prerequisites:** Node.js v22.13.0 through v22.x, or v24 and later ([Download](https://nodejs.org/en/download)), and the `gh` CLI installed ([Download](https://cli.github.com/)).
 
 ---
 
