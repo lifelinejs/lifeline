@@ -140,7 +140,9 @@ export async function remoteRef({ git, remote, kind, name }) {
  * @param {import('../git/git.js').Git} options.git
  * @param {string} options.remote
  * @param {string} options.version Normalized version, e.g. "1.x".
- * @param {string} options.stage The stage the file puts the line in.
+ * @param {string} options.stage The stage to look past: what the file puts the
+ *   line in, except for a promotion, where it is the stage being promoted to so
+ *   that the branch that promotion is about is not counted as drift.
  * @returns {Promise<string | null>} The support branch the remote has that is
  *   further along than `stage`, e.g. "el/v1.x", or null when the remote has not
  *   moved past it. Only the furthest one is returned: what matters is how far
@@ -175,6 +177,29 @@ export async function branchAhead({ git, remote, version, stage }) {
     }
   }
   return found;
+}
+
+/**
+ * What to say when the remote has moved past what SUPPORT.yaml says.
+ *
+ * The same drift reads the same way whichever command ran into it, so the
+ * sentence lives here; only what the command did not do is its own.
+ *
+ * @param {object} options
+ * @param {string} options.remote
+ * @param {string} options.branch The branch the remote has, e.g. "el/v1.x".
+ * @param {string} options.version Normalized version, e.g. "1.x".
+ * @param {string} options.stage The stage the file puts the line in.
+ * @param {string} options.nothing What this command did not do, in a few words,
+ *   like "nothing was pushed".
+ * @returns {import('../core/problems.js').Problem}
+ */
+export function behindProblem({ remote, branch, version, stage, nothing }) {
+  return error(
+    `${remote}/${branch} exists, but SUPPORT.yaml still says ${version} is ${stage}; ` +
+      `the file is behind the remote, so ${nothing}. ` +
+      'Run "lifeline check" to see what disagrees, and reconcile the file first.',
+  );
 }
 
 /**

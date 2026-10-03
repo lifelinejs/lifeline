@@ -290,6 +290,80 @@ describe('promote refusals', () => {
   });
 });
 
+describe('promote when SUPPORT.yaml is behind the remote', () => {
+  it('refuses a line the remote has already ended', async () => {
+    // The freeze was pushed and the file write was lost, so the file still
+    // calls the line a line in development. Promoting on the file's word alone
+    // would hand a line that has ended a new Active Support branch.
+    const cwd = await setup();
+    await git(['branch', 'el/v3.x'], cwd);
+    await git(['push', 'origin', 'el/v3.x'], cwd);
+
+    const result = await run(cwd, { write: true });
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.pushed, false);
+    assert.equal(result.written, false);
+    assert.match(
+      result.problems[0].message,
+      /origin\/el\/v3\.x exists, but SUPPORT\.yaml still says 3\.x is indev/,
+    );
+    assert.match(result.problems[0].message, /no branch was created/);
+
+    // Nothing was created and the file is left as it was found.
+    assert.doesNotMatch(await remoteRefs(cwd), /refs\/heads\/as\/v3\.x$/m);
+    assert.match(await readSupportFile(cwd), /stage: indev/);
+  });
+
+  it('refuses to graduate a line the remote has already ended', async () => {
+    // The same drift from Active Support: ls/v3.x would be cut from as/v3.x
+    // for a line the remote froze.
+    const cwd = await setup({
+      support: supportYaml([
+        { version: '3.x', stage: 'as', eol: '2030-01-01' },
+      ]),
+      branches: ['as/v3.x'],
+    });
+    await git(['branch', 'el/v3.x', 'as/v3.x'], cwd);
+    await git(['push', 'origin', 'el/v3.x'], cwd);
+
+    const result = await run(cwd, {
+      to: 'ls',
+      date: '2030-01-01',
+      write: true,
+    });
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.pushed, false);
+    assert.match(result.problems[0].message, /origin\/el\/v3\.x exists/);
+    assert.doesNotMatch(await remoteRefs(cwd), /refs\/heads\/ls\/v3\.x$/m);
+    assert.match(await readSupportFile(cwd), /stage: as/);
+  });
+
+  it('refuses the same way with --force, which is for this branch only', async () => {
+    const cwd = await setup();
+    await git(['branch', 'el/v3.x'], cwd);
+    await git(['push', 'origin', 'el/v3.x'], cwd);
+
+    const result = await run(cwd, { force: true, write: true });
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.pushed, false);
+    assert.doesNotMatch(await remoteRefs(cwd), /refs\/heads\/as\/v3\.x$/m);
+  });
+
+  it('ignores a branch that exists only in this checkout', async () => {
+    const cwd = await setup();
+    await git(['branch', 'ls/v3.x'], cwd); // local only: the remote has none
+
+    const result = await run(cwd, { write: true });
+
+    assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+    assert.equal(result.pushed, true);
+    assert.match(await readSupportFile(cwd), /stage: as/);
+  });
+});
+
 describe('promote alongside another lifecycle command', () => {
   const twoLines = supportYaml([
     { version: '1.x', stage: 'ls', eol: '2027-01-01' },

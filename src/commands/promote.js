@@ -10,6 +10,8 @@ import { planPromote, validatePromoteFlags } from '../core/lifecycle.js';
 import { error } from '../core/problems.js';
 import { normalizeLine } from '../core/stages.js';
 import {
+  behindProblem,
+  branchAhead,
   checkCleanTree,
   fetchFirst,
   gitMessage,
@@ -140,6 +142,47 @@ export async function promote({
         error(
           `${remote}/${plan.branch} already exists; look at it, then pass --force to accept it as it is.`,
         ),
+      ],
+      exitCode: 1,
+    });
+  }
+
+  // The branch above may not be there while the line has moved on regardless:
+  // a transition that pushed its refs and then lost its write leaves the file
+  // behind, and promoting from what the file says would create a support
+  // branch for a stage the remote has already left. That is the check this
+  // makes: does the remote have anything past the stage being promoted to?
+  //
+  // The stage being promoted *to* is the one asked about, not the stage the
+  // file is at, so a branch that is already there for this promotion is left to
+  // the --force handling above rather than refused here.
+  let ahead;
+  try {
+    ahead = await branchAhead({
+      git,
+      remote,
+      version: plan.version,
+      stage: plan.to,
+    });
+  } catch (lsError) {
+    return result(plan, {
+      problems: [
+        error(`git ls-remote ${remote} failed: ${gitMessage(lsError)}`),
+      ],
+      exitCode: 1,
+    });
+  }
+  if (ahead) {
+    return result(plan, {
+      branchExisted,
+      problems: [
+        behindProblem({
+          remote,
+          branch: ahead,
+          version: plan.version,
+          stage: plan.from,
+          nothing: 'no branch was created and the file was not written',
+        }),
       ],
       exitCode: 1,
     });
