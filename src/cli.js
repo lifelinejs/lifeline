@@ -236,9 +236,8 @@ async function runBackport(sha, _options, command) {
   if (result.plan) {
     console.log(formatBackportPlan(result.plan));
   }
-  if (result.done) {
-    console.log(`Pushed to ${options.remote}/${result.plan.branch}.`);
-  }
+  // result.steps already reports the push ("Pushed to origin/...") whenever
+  // one happened, so a separate "done" line would say it twice.
   for (const step of result.steps) {
     console.log(step);
   }
