@@ -6,9 +6,11 @@
 import { linesFromBranches } from '../core/discover.js';
 import { error } from '../core/problems.js';
 import {
+  COULD_NOT_READ,
   createSupport,
   loadSupport,
   renderSupportFile,
+  SUPPORT_CHANGED,
   withSupportLock,
   writeSupport,
 } from '../support-file.js';
@@ -99,10 +101,12 @@ async function writeStarterFile({ cwd, git, force }) {
   const text = renderSupportFile(lines);
   let path;
   try {
-    // --force replaces the file; without it the create is exclusive, so a
+    // --force replaces the file, but only the one this run read: a change saved
+    // while the branches were being read is somebody's work, and replacing it
+    // would throw that work away. Without --force the create is exclusive, so a
     // SUPPORT.yaml that appears after the check above still cannot be lost.
     path = force
-      ? await writeSupport(cwd, text)
+      ? await writeSupport(cwd, text, expectedContents(existing))
       : await createSupport(cwd, text);
   } catch (writeError) {
     if (writeError.code === 'EEXIST') {
@@ -110,17 +114,51 @@ async function writeStarterFile({ cwd, git, force }) {
       // check at the top, with the same words.
       return refuseExisting();
     }
-    return {
-      written: false,
-      path: null,
-      text: '',
-      lines: [],
-      problems: [error(`Could not write SUPPORT.yaml: ${writeError.message}`)],
-      exitCode: 1,
-    };
+    return writeFailed(writeError);
   }
 
   return { written: true, path, text, lines, problems: [], exitCode: 0 };
+}
+
+/**
+ * What the write has to find still there, from what this run read.
+ *
+ * @param {import('../support-file.js').LoadedSupport} loaded
+ * @returns {string | null | typeof COULD_NOT_READ} The text the file held, null
+ *   when there was none, or COULD_NOT_READ for the one case where there is
+ *   nothing to compare: a file that could not be read. Replacing that is what
+ *   --force is for, and refusing would leave the user with no way to get past
+ *   it.
+ */
+function expectedContents(loaded) {
+  if (loaded.outcome === 'ok') {
+    return loaded.text;
+  }
+  return loaded.outcome === 'unreadable' ? COULD_NOT_READ : null;
+}
+
+/**
+ * The answer for a write that did not happen: nothing was written, and either
+ * what stopped it is worth saying in its own words or it goes in with the rest.
+ *
+ * @param {Error & {code?: string}} writeError
+ * @returns {InitResult}
+ */
+function writeFailed(writeError) {
+  return {
+    written: false,
+    path: null,
+    text: '',
+    lines: [],
+    problems: [
+      error(
+        writeError.code === SUPPORT_CHANGED
+          ? writeError.message
+          : `Could not write SUPPORT.yaml: ${writeError.message}`,
+      ),
+    ],
+    exitCode: 1,
+  };
 }
 
 /**

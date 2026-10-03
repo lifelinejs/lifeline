@@ -14,8 +14,10 @@ import { init, starterLines } from '../src/commands/init.js';
 import { linesFromBranches } from '../src/core/discover.js';
 import { createGit } from '../src/git/git.js';
 import {
+  COULD_NOT_READ,
   createSupport,
   SCHEMA_URL,
+  SUPPORT_CHANGED,
   writeSupport,
 } from '../src/support-file.js';
 import { parseSupport } from '../src/core/support.js';
@@ -194,6 +196,32 @@ test('--force writes over the old file', async () => {
   assert.match(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), /"1\.x"/);
 });
 
+test('--force does not overwrite a file saved while it was running', async () => {
+  const cwd = await makeTempDir({
+    'SUPPORT.yaml': 'lines:\n  - version: "9.x"\n    stage: indev\n',
+  });
+  const saved = 'lines:\n  - version: "9.x"\n    stage: as\n';
+  const editingGit = {
+    ...fakeGit(['devel']),
+    // An editor saves while init is reading the branches. Nothing takes the
+    // support lock for a save from an editor, and --force is not a licence to
+    // throw that save away.
+    branches: async () => {
+      await writeFile(join(cwd, 'SUPPORT.yaml'), saved, 'utf8');
+      return ['devel'];
+    },
+  };
+
+  const result = await init({ cwd, git: editingGit, force: true });
+
+  assert.equal(result.written, false);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.problems[0].message, /changed while this command was/);
+  assert.match(result.problems[0].message, /nothing was written/);
+  // Their save is still the file.
+  assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), saved);
+});
+
 test('createSupport refuses an existing file, writeSupport replaces it', async () => {
   const cwd = await makeTempDir({ 'SUPPORT.yaml': 'old\n' });
 
@@ -205,10 +233,53 @@ test('createSupport refuses an existing file, writeSupport replaces it', async (
   assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), 'old\n');
 
   // The replace path writes through a temporary file and renames it, so no
-  // temporary file is left lying around afterwards.
-  await writeSupport(cwd, 'new\n');
+  // temporary file is left lying around afterwards. A writer says what it read,
+  // which is what the replace is checked against.
+  await writeSupport(cwd, 'new\n', 'old\n');
   assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), 'new\n');
   assert.deepEqual(await readdir(cwd), ['SUPPORT.yaml']);
+});
+
+test('writeSupport refuses a file that has moved on since it was read', async () => {
+  const cwd = await makeTempDir({ 'SUPPORT.yaml': 'old\n' });
+  const theirs = 'lines:\n  - version: "9.x"\n    stage: indev\n';
+  // Somebody who does not take the support lock: an editor, another tool,
+  // another copy of Lifeline.
+  await writeFile(join(cwd, 'SUPPORT.yaml'), theirs, 'utf8');
+
+  await assert.rejects(
+    () => writeSupport(cwd, 'new\n', 'old\n'),
+    (thrown) => thrown.code === SUPPORT_CHANGED,
+  );
+
+  // Their change is still the file, and nothing was left behind trying.
+  assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), theirs);
+  assert.deepEqual(await readdir(cwd), ['SUPPORT.yaml']);
+});
+
+test('writeSupport refuses a file that appeared where there was none', async () => {
+  const cwd = await makeTempDir();
+
+  await writeSupport(cwd, 'new\n', null);
+  assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), 'new\n');
+
+  // And the same writer, told there was no file, does not replace one that is
+  // there now.
+  await assert.rejects(
+    () => writeSupport(cwd, 'newer\n', null),
+    (thrown) => thrown.code === SUPPORT_CHANGED,
+  );
+  assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), 'new\n');
+});
+
+test('writeSupport replaces a file the caller could not read', async () => {
+  const cwd = await makeTempDir({ 'SUPPORT.yaml': 'old\n' });
+
+  // The one caller with nothing to compare: `init --force` was asked to replace
+  // this file and could not read it, so there is no "before" to check against.
+  await writeSupport(cwd, 'new\n', COULD_NOT_READ);
+
+  assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), 'new\n');
 });
 
 test('createSupport publishes the file whole and leaves nothing behind', async () => {

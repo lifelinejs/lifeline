@@ -11,7 +11,14 @@
 //
 // Usage: node interrupted-write.js <directory> [create|replace]
 
-import { createSupport, writeSupport } from '../../src/support-file.js';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+import {
+  createSupport,
+  SUPPORT_FILE,
+  writeSupport,
+} from '../../src/support-file.js';
 
 const [cwd, mode = 'create'] = process.argv.slice(2);
 
@@ -27,7 +34,13 @@ export const BODY =
 export const BODY_SIZE = Buffer.byteLength(BODY);
 
 try {
-  await (mode === 'replace' ? writeSupport : createSupport)(cwd, BODY);
+  if (mode === 'replace') {
+    // What every writer has: the text it read before it decided to write.
+    const before = await readFile(join(cwd, SUPPORT_FILE), 'utf8');
+    await writeSupport(cwd, BODY, before);
+  } else {
+    await createSupport(cwd, BODY);
+  }
   console.log(JSON.stringify({ written: true }));
 } catch (thrown) {
   // What the write did before it was stopped, so a test can tell an interrupted

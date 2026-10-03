@@ -9,6 +9,7 @@ import { error } from '../core/problems.js';
 import {
   loadSupport,
   renderSupportFile,
+  SUPPORT_CHANGED,
   withSupportLock,
   writeSupport,
 } from '../support-file.js';
@@ -18,18 +19,20 @@ import {
  *
  * @param {string} cwd
  * @returns {Promise<{ok: boolean, lines: import('../core/support.js').Line[],
+ *   text: string | null,
  *   problems: import('../core/problems.js').Problem[]}>} `ok` is false for a
  *   missing file, an unreadable one, or one with an error in it. All of those
- *   are configuration problems, which callers report with exit code 2.
+ *   are configuration problems, which callers report with exit code 2. `text`
+ *   is the file as it was read, which is what a write has to find still there.
  */
 export async function readSupport(cwd) {
   const loaded = await loadSupport(cwd);
   const broken = loaded.problems.filter((problem) => problem.level === 'error');
 
   if (loaded.outcome !== 'ok' || broken.length > 0) {
-    return { ok: false, lines: [], problems: loaded.problems };
+    return { ok: false, lines: [], text: null, problems: loaded.problems };
   }
-  return { ok: true, lines: loaded.lines, problems: [] };
+  return { ok: true, lines: loaded.lines, text: loaded.text, problems: [] };
 }
 
 /**
@@ -130,7 +133,9 @@ export async function remoteRef({ git, remote, kind, name }) {
  *
  * The reread, that comparison and the write all happen under the support lock,
  * so a second command in this checkout cannot read the same file and then write
- * over this one.
+ * over this one. The write itself also refuses to replace a file that is no
+ * longer the one just read, which is what stops a writer that takes no lock (an
+ * editor, another tool, another copy of Lifeline) from losing a change.
  *
  * The file is rendered from scratch, so it comes back in Lifeline's canonical
  * shape. Comments and any key Lifeline does not know about do not survive.
@@ -170,10 +175,23 @@ export async function writeMovedLine({
         ? { version: line.version, stage, eol, components: line.components }
         : line,
     );
-    return {
-      path: await writeSupport(cwd, renderSupportFile(updated)),
-      problems: [],
-    };
+
+    let path;
+    try {
+      // The text just read is what the file has to still hold. The lock covers
+      // the other Lifeline commands; this covers everything else that writes
+      // the file without it, so a change made in the last moment is not put
+      // back over.
+      path = await writeSupport(cwd, renderSupportFile(updated), current.text);
+    } catch (writeError) {
+      if (writeError.code !== SUPPORT_CHANGED) {
+        // A real failure to write: the caller reports what the file system said.
+        throw writeError;
+      }
+      return { path: null, problems: [error(writeError.message)] };
+    }
+
+    return { path, problems: [] };
   });
 
   return locked.ok ? locked.value : { path: null, problems: [locked.problem] };

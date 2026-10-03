@@ -14,6 +14,26 @@ import { error } from './core/problems.js';
 /** The file name, fixed: Lifeline has no other configuration. */
 export const SUPPORT_FILE = 'SUPPORT.yaml';
 
+/**
+ * The error code for "somebody else wrote SUPPORT.yaml first".
+ *
+ * The support lock only covers Lifeline: an editor saving the file, another
+ * tool, or another version of Lifeline all write without it. A writer that is
+ * about to replace the whole file compares it with what it read and refuses,
+ * rather than putting back over a change it never saw.
+ */
+export const SUPPORT_CHANGED = 'ECHANGED';
+
+/**
+ * What a writer passes when it could not read the file, so there is nothing to
+ * compare its write against.
+ *
+ * Only `lifeline init --force` can reach this: it is the one writer told to
+ * replace a file without having read it. Everywhere else the file is read
+ * first, or the run stops.
+ */
+export const COULD_NOT_READ = Symbol('could not read SUPPORT.yaml');
+
 /** Used in the comment that gives editors a schema to autocomplete against. */
 export const SCHEMA_URL =
   'https://raw.githubusercontent.com/lifelinejs/lifeline/devel/schema/support.schema.json';
@@ -23,6 +43,9 @@ export const SCHEMA_URL =
  * @property {'ok' | 'missing' | 'unreadable'} outcome Did we get a file at all?
  * @property {import('./core/support.js').Line[]} lines Lines we understood.
  * @property {import('./core/problems.js').Problem[]} problems Anything wrong.
+ * @property {string | null} text The file as it is on disk when we could read
+ *   it, whatever we made of it. A writer has to find this still there before it
+ *   replaces the file, or it would put back over a change made since.
  */
 
 /**
@@ -44,6 +67,7 @@ export async function loadSupport(cwd) {
       return {
         outcome: 'missing',
         lines: [],
+        text: null,
         problems: [
           error(
             `No ${SUPPORT_FILE} in ${cwd}. Run "lifeline init" to create one.`,
@@ -54,12 +78,18 @@ export async function loadSupport(cwd) {
     return {
       outcome: 'unreadable',
       lines: [],
+      text: null,
       problems: [error(`Could not read ${path}: ${readError.message}`)],
     };
   }
 
   const parsed = parseSupport(text);
-  return { outcome: 'ok', lines: parsed.lines, problems: parsed.problems };
+  return {
+    outcome: 'ok',
+    lines: parsed.lines,
+    text,
+    problems: parsed.problems,
+  };
 }
 
 /**
@@ -109,16 +139,26 @@ function renderComponents(components) {
 /**
  * Write SUPPORT.yaml into a directory, replacing any existing file.
  *
+ * The file is replaced only while it still holds `expected`, so a writer that
+ * read it a moment ago cannot put back over a change made since by something
+ * that does not take the support lock, such as an editor, another tool, or
+ * another copy of Lifeline. When the file has moved on this throws with the code
+ * SUPPORT_CHANGED and writes nothing, so the change is still there to be read.
+ *
  * The text goes to a temporary file in the same directory first and is then
  * renamed over SUPPORT.yaml, so a reader never sees half a file, and a write
  * that fails halfway never destroys the one that was there.
  *
  * @param {string} cwd
  * @param {string} text
+ * @param {string | null | typeof COULD_NOT_READ} expected What the caller read:
+ *   the text the file held, or null when there was no file. COULD_NOT_READ is
+ *   for the one caller that could not read the file at all, so nothing is
+ *   compared and the write goes ahead.
  * @returns {Promise<string>} The path written to.
  */
-export async function writeSupport(cwd, text) {
-  return publish(cwd, text, { exclusive: false });
+export async function writeSupport(cwd, text, expected) {
+  return publish(cwd, text, { exclusive: false, expected });
 }
 
 /**
@@ -126,15 +166,17 @@ export async function writeSupport(cwd, text) {
  *
  * The create is exclusive: it fails with `EEXIST` instead of clobbering a file
  * that is already there, which is what `lifeline init` relies on when it runs
- * without `--force`. Keeping this separate from writeSupport() means the
- * replace path cannot be taken by accident.
+ * without `--force`. The check that `link` performs *is* the check that the
+ * file is the one the caller looked at, so this needs no expectation of its own.
+ * Keeping this separate from writeSupport() means the replace path cannot be
+ * taken by accident.
  *
  * @param {string} cwd
  * @param {string} text
  * @returns {Promise<string>} The path written to.
  */
 export async function createSupport(cwd, text) {
-  return publish(cwd, text, { exclusive: true });
+  return publish(cwd, text, { exclusive: true, expected: null });
 }
 
 /**
@@ -164,11 +206,13 @@ export async function createSupport(cwd, text) {
  *
  * @param {string} cwd
  * @param {string} text
- * @param {{exclusive: boolean}} options `exclusive` fails with EEXIST when
- *   SUPPORT.yaml is already there, instead of replacing it.
+ * @param {{exclusive: boolean,
+ *   expected: string | null | typeof COULD_NOT_READ}} options `exclusive` fails
+ *   with EEXIST when SUPPORT.yaml is already there, instead of replacing it.
+ *   `expected` is what the caller read, checked before the name is published.
  * @returns {Promise<string>} The path written to.
  */
-async function publish(cwd, text, { exclusive }) {
+async function publish(cwd, text, { exclusive, expected }) {
   const path = join(cwd, SUPPORT_FILE);
   // Same directory as the target, so the rename stays on one filesystem.
   const temporary = join(cwd, `.${SUPPORT_FILE}.${randomUUID()}.tmp`);
@@ -185,6 +229,9 @@ async function publish(cwd, text, { exclusive }) {
       await link(temporary, path);
       await rm(temporary, { force: true });
     } else {
+      // The last thing before the name moves. Everything slow is already done,
+      // so this is as close to the rename as the check can get.
+      await assertUnchanged(path, expected);
       await rename(temporary, path);
     }
     await syncDirectory(cwd);
@@ -198,6 +245,49 @@ async function publish(cwd, text, { exclusive }) {
     await handle?.close().catch(() => {});
   }
   return path;
+}
+
+/**
+ * Refuse to replace a file that is no longer the one the caller read.
+ *
+ * @param {string} path
+ * @param {string | null | typeof COULD_NOT_READ} expected
+ * @returns {Promise<void>}
+ * @throws {Error} With the code SUPPORT_CHANGED, when the file has moved on.
+ *   Anything else that goes wrong reading it is passed on: the write has not
+ *   started, so the run can say what is wrong with the file instead.
+ */
+async function assertUnchanged(path, expected) {
+  if (expected === COULD_NOT_READ) {
+    return;
+  }
+  const now = await readFileOrNull(path);
+  if (now === expected) {
+    return;
+  }
+  const changed = new Error(
+    `${SUPPORT_FILE} changed while this command was writing it, so nothing was written. ` +
+      'Look at it, then run the command again.',
+  );
+  changed.code = SUPPORT_CHANGED;
+  throw changed;
+}
+
+/**
+ * The file as it is now, or null when there is none. A file that cannot be read
+ * for any other reason is a real problem, and is passed on.
+ * @param {string} path
+ * @returns {Promise<string | null>}
+ */
+async function readFileOrNull(path) {
+  try {
+    return await readFile(path, 'utf8');
+  } catch (readError) {
+    if (readError.code === 'ENOENT') {
+      return null;
+    }
+    throw readError;
+  }
 }
 
 /**
@@ -242,6 +332,11 @@ async function syncDirectory(dir) {
  * a name derived from the directory it guards: taking it never makes the working
  * tree look dirty to `git status`, never leaves anything in the user's branches,
  * and two clones are two directories and two locks.
+ *
+ * It only covers Lifeline, though: an editor saving the file, another tool, or
+ * another copy of Lifeline writes without it. That is what the check in
+ * publish() is for: the lock keeps two Lifeline commands apart, and the check
+ * keeps a writer from replacing a file that changed under it either way.
  *
  * Not getting the lock is an error rather than a wait. A lock left behind by a
  * killed process would otherwise be indistinguishable from one held by a run in
