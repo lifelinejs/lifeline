@@ -11,6 +11,8 @@ import { planEol, validateEolFlags } from '../core/lifecycle.js';
 import { error, warning } from '../core/problems.js';
 import { normalizeLine } from '../core/stages.js';
 import {
+  behindProblem,
+  branchAhead,
   checkCleanTree,
   fetchFirst,
   gitMessage,
@@ -170,6 +172,52 @@ export async function eol({
       ],
       exitCode: 1,
     });
+  }
+
+  // A freeze the remote already has is the state --force is for, so the drift
+  // check below is left out of it: a re-run that finishes the file after the
+  // refs were pushed has to stay possible. When neither ref is there this is a
+  // fresh freeze, and then a line the remote has already moved past must not be
+  // frozen from a branch the file still calls its stage. The snapshot would be
+  // the wrong one, taken from a stage the line left.
+  //
+  // This cannot sit with the base-ref check above, which runs before the
+  // question of what the remote already has has been asked.
+  if (!branchExisted && !tagExisted) {
+    let ahead;
+    try {
+      ahead = await branchAhead({
+        git,
+        remote,
+        version: plan.version,
+        stage: plan.from,
+      });
+    } catch (lsError) {
+      return result(plan, {
+        branchExisted,
+        tagExisted,
+        problems: [
+          error(`git ls-remote ${remote} failed: ${gitMessage(lsError)}`),
+        ],
+        exitCode: 1,
+      });
+    }
+    if (ahead) {
+      return result(plan, {
+        branchExisted,
+        tagExisted,
+        problems: [
+          behindProblem({
+            remote,
+            branch: ahead,
+            version: plan.version,
+            stage: plan.from,
+            nothing: 'the line was not frozen',
+          }),
+        ],
+        exitCode: 1,
+      });
+    }
   }
 
   if (dryRun) {

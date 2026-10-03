@@ -417,6 +417,82 @@ describe('eol with refs that already exist', () => {
   });
 });
 
+describe('eol when SUPPORT.yaml is behind the remote', () => {
+  it('refuses to freeze a line the remote has already moved past', async () => {
+    // Life Support was pushed and the file write was lost, so the file still
+    // calls the line Active Support. Freezing from there would archive a
+    // snapshot taken from a branch the line has already left.
+    const cwd = await setup({
+      support: supportYaml([
+        { version: '1.x', stage: 'as', eol: '2027-01-01' },
+      ]),
+      branches: ['as/v1.x'],
+    });
+    await git(['branch', 'ls/v1.x', 'as/v1.x'], cwd);
+    await git(['push', 'origin', 'ls/v1.x'], cwd);
+
+    const result = await run(cwd, { write: true });
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.pushed, false);
+    assert.equal(result.written, false);
+    assert.match(
+      result.problems[0].message,
+      /origin\/ls\/v1\.x exists, but SUPPORT\.yaml still says 1\.x is as/,
+    );
+    assert.match(result.problems[0].message, /the line was not frozen/);
+
+    // No freeze, and the file is left as it was found.
+    assert.doesNotMatch(await remoteRefs(cwd), /refs\/heads\/el\/v1\.x$/m);
+    assert.match(await readSupportFile(cwd), /stage: as/);
+  });
+
+  it('refuses the same way on a dry run', async () => {
+    const cwd = await setup({
+      support: supportYaml([
+        { version: '1.x', stage: 'as', eol: '2027-01-01' },
+      ]),
+      branches: ['as/v1.x'],
+    });
+    await git(['branch', 'ls/v1.x', 'as/v1.x'], cwd);
+    await git(['push', 'origin', 'ls/v1.x'], cwd);
+
+    const result = await run(cwd, { dryRun: true });
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.problems[0].message, /origin\/ls\/v1\.x exists/);
+    assert.doesNotMatch(await remoteRefs(cwd), /refs\/heads\/el\/v1\.x$/m);
+  });
+
+  it('ignores a branch that exists only in this checkout', async () => {
+    const cwd = await setup(); // the file says Life Support
+    await git(['branch', 'el/v1.x', 'ls/v1.x'], cwd); // local only
+
+    const result = await run(cwd, { write: true });
+
+    assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+    assert.equal(result.pushed, true);
+    assert.match(await remoteRefs(cwd), /refs\/heads\/el\/v1\.x$/m);
+    assert.match(await readSupportFile(cwd), /stage: el/);
+  });
+
+  it('still finishes a freeze the remote already has, with --force', async () => {
+    // The same drift, but the freeze itself did land: --force is what completes
+    // it, so the drift check has to keep its hands off this one.
+    const cwd = await setup(); // the file says Life Support
+    await git(['branch', 'el/v1.x', 'ls/v1.x'], cwd);
+    await git(['push', 'origin', 'el/v1.x'], cwd);
+    await git(['tag', 'v1.x-eol', 'ls/v1.x'], cwd);
+    await git(['push', 'origin', 'v1.x-eol'], cwd);
+
+    const result = await run(cwd, { force: true, write: true });
+
+    assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+    assert.equal(result.written, true);
+    assert.match(await readSupportFile(cwd), /stage: el/);
+  });
+});
+
 describe('eol keeps one freeze snapshot', () => {
   for (const annotated of [false, true]) {
     for (const localTag of ['conflicting', 'absent']) {
