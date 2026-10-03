@@ -184,6 +184,9 @@ export async function backport({
     );
   }
 
+  // Where the user was before, so a failure can put them back there.
+  const previousBranch = await currentBranchName(git);
+
   try {
     await git.run(['checkout', '-b', plan.branch, plan.baseRef]);
   } catch (checkoutError) {
@@ -209,11 +212,18 @@ export async function backport({
         exitCode: 1,
       };
     }
-    return stopped(
-      plan,
-      [error(`git cherry-pick failed: ${gitMessage(pickError)}`)],
-      1,
-    );
+    // Not a conflict: nothing here is worth keeping, so put the repository
+    // back on the branch the user started from and drop the half-made branch
+    // rather than leaving them stranded on plan.branch.
+    const cleanup = await undoBackportBranch(git, previousBranch, plan.branch);
+    return {
+      ...stopped(
+        plan,
+        [error(`git cherry-pick failed: ${gitMessage(pickError)}`)],
+        1,
+      ),
+      steps: cleanup,
+    };
   }
 
   try {
@@ -286,6 +296,62 @@ export async function backport({
  */
 function gitMessage(failure) {
   return String(failure.stderr || '').trim() || failure.message.trim();
+}
+
+/**
+ * The branch HEAD is on right now, or null when HEAD is detached.
+ * @param {import('../git/git.js').Git} git
+ * @returns {Promise<string | null>}
+ */
+async function currentBranchName(git) {
+  try {
+    const name = (
+      await git.run(['symbolic-ref', '--quiet', '--short', 'HEAD'])
+    ).trim();
+    return name === '' ? null : name;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Undo the backport branch after a cherry-pick that failed for anything other
+ * than a conflict: clear any half-finished pick, go back to the branch the
+ * user was on, and delete the branch that was cut for the backport.
+ *
+ * Every step is best effort. Whatever could not be undone comes back as a
+ * line for the user to run, so a failure never leaves the repository stranded
+ * on `plan.branch` without saying so.
+ *
+ * @param {import('../git/git.js').Git} git
+ * @param {string | null} previousBranch Branch HEAD was on before, if any.
+ * @param {string} branch The backport branch to drop.
+ * @returns {Promise<string[]>} What is left to do; empty when all went.
+ */
+async function undoBackportBranch(git, previousBranch, branch) {
+  try {
+    // Also clears CHERRY_PICK_HEAD when the pick got far enough to leave one.
+    // Git refuses when there is nothing to abort, which is fine here.
+    await git.run(['cherry-pick', '--abort']);
+  } catch {
+    // Nothing in progress.
+  }
+
+  const missed = [];
+  if (previousBranch) {
+    try {
+      await git.run(['checkout', previousBranch]);
+    } catch {
+      missed.push(`git checkout ${previousBranch}`);
+    }
+  }
+  try {
+    await git.run(['branch', '-D', branch]);
+  } catch {
+    missed.push(`git branch -D ${branch}`);
+  }
+
+  return missed.length === 0 ? [] : [`Clean up by hand: ${missed.join('; ')}`];
 }
 
 /**

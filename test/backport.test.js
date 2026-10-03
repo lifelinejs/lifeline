@@ -409,6 +409,34 @@ describe('backport conflicts', () => {
   });
 });
 
+describe('backport failures that are not conflicts', () => {
+  it('puts the repository back on the branch it came from', async () => {
+    // The support branch already holds the fix, so the cherry-pick comes out
+    // empty: a failure with no unmerged files to resolve.
+    const { cwd, sha } = await setup({
+      branchFiles: {
+        'as/v1.x': { 'src/fix.js': 'export const fixed = true;\n' },
+      },
+      fix: { 'src/fix.js': 'export const fixed = true;\n' },
+    });
+
+    const { result, forge } = await run(cwd, { overrides: { sha } });
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.problems[0].message, /git cherry-pick failed/);
+    assert.equal(result.conflict, null);
+    assert.equal(forge.calls.length, 0);
+
+    // Not stranded on the backport branch: back on devel, and it is gone.
+    const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+    assert.equal(branch.trim(), 'devel');
+    const locals = await git(['branch', '--list', 'backport/1.x/*'], cwd);
+    assert.equal(locals.trim(), '');
+    assert.equal(await fileExists(`${cwd}/.git/CHERRY_PICK_HEAD`), false);
+    assert.equal((await git(['status', '--porcelain'], cwd)).trim(), '');
+  });
+});
+
 describe('backport flags', () => {
   it('--dry-run prints a plan and changes nothing', async () => {
     const { cwd, sha } = await setup();
