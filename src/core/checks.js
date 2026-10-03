@@ -14,6 +14,7 @@ import {
 } from './stages.js';
 import { daysUntilEol } from './dates.js';
 import { error, warning } from './problems.js';
+import { duplicateProblem } from './support.js';
 
 /**
  * What Lifeline knows about a repository. Collected by a command (see
@@ -60,7 +61,8 @@ export function checkAgainstRepo(lines, repoFacts) {
 }
 
 /**
- * The same version must not appear twice: one entry, one line.
+ * The same version must not appear twice: one entry, one line. Commands that
+ * would act on the line refuse a file like this; this is how it gets reported.
  * @param {import('./support.js').Line[]} lines
  * @returns {import('./problems.js').Problem[]}
  */
@@ -74,11 +76,7 @@ function checkDuplicateVersions(lines) {
   const problems = [];
   for (const [version, count] of counts) {
     if (count > 1) {
-      problems.push(
-        error(
-          `version "${version}" is listed ${count} times; list each line once.`,
-        ),
-      );
+      problems.push(duplicateProblem(version, count));
     }
   }
   return problems;

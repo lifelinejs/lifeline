@@ -264,4 +264,16 @@ describe('planEol', () => {
     assert.equal(plan, null);
     assert.match(problems[0].message, /"5\.x" is not listed/);
   });
+
+  it('says no to a line the file lists twice', () => {
+    // The first entry says ls and the second says el. Reading the first would
+    // plan a freeze for a line that has already ended.
+    const { plan, problems } = planEol({
+      lines: lines(['1.x', 'ls', { eol: '2027-01-01' }], ['1.x', 'el']),
+      version: '1.x',
+    });
+
+    assert.equal(plan, null);
+    assert.match(problems[0].message, /"1\.x" is listed 2 times/);
+  });
 });

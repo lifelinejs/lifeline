@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseSupport } from '../src/core/support.js';
+import { oneLine, parseSupport } from '../src/core/support.js';
 
 /** Only the error-level problems, as an array of strings. */
 function errors(problems) {
@@ -197,4 +197,38 @@ test('reports every bad line, not just the first', () => {
   assert.deepEqual(lines, []);
   assert.equal(errors(problems).length, 2);
   assert.match(errors(problems)[1], /lines\[2\]/);
+});
+
+test('oneLine hands back the single line for a version', () => {
+  const lines = [
+    { version: '2.x', stage: 'indev' },
+    { version: '1.x', stage: 'ls' },
+  ];
+
+  const { line, problems } = oneLine(lines, '1.x');
+
+  assert.equal(line.stage, 'ls');
+  assert.deepEqual(problems, []);
+});
+
+test('oneLine says so when a version is not listed', () => {
+  const { line, problems } = oneLine([{ version: '1.x', stage: 'ls' }], '9.x');
+
+  assert.equal(line, null);
+  assert.match(problems[0].message, /"9\.x" is not listed/);
+});
+
+test('oneLine refuses to pick between two entries for one version', () => {
+  // Which one a lookup landed on would come down to the order they are written
+  // in, so whether this line takes fixes would depend on the layout of the file.
+  const { line, problems } = oneLine(
+    [
+      { version: '1.x', stage: 'ls' },
+      { version: '1.x', stage: 'el' },
+    ],
+    '1.x',
+  );
+
+  assert.equal(line, null);
+  assert.match(problems[0].message, /"1\.x" is listed 2 times/);
 });

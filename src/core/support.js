@@ -116,6 +116,52 @@ export function parseSupport(text) {
 }
 
 /**
+ * The complaint about a version that is listed more than once.
+ *
+ * One entry is one line, so this is the same sentence whichever way the problem
+ * is reported: fixing SUPPORT.yaml, `check`, or a command refusing to act on the
+ * file.
+ *
+ * @param {string} version
+ * @param {number} count How many entries list it.
+ * @returns {import('./problems.js').Problem}
+ */
+export function duplicateProblem(version, count) {
+  return error(
+    `version "${version}" is listed ${count} times; list each line once.`,
+  );
+}
+
+/**
+ * The line with this version, when the file lists it exactly once.
+ *
+ * Two entries for the same version are a contradiction, not an ambiguity to
+ * settle: which stage a lookup lands on comes down to the order they happen to
+ * be written in, so whether a line takes backports, and which ones, would
+ * depend on how the file is laid out rather than on what it says. A write that
+ * moved the line would move every copy of it. So `check` reports it, and
+ * anything that is about to act on the line refuses rather than picking one.
+ *
+ * @param {Line[]} lines
+ * @param {string} version Normalized version, e.g. "1.x".
+ * @returns {{line: Line | null, problems: import('./problems.js').Problem[]}}
+ *   The line and no problems, or null and the reason there is not exactly one.
+ */
+export function oneLine(lines, version) {
+  const listed = lines.filter((candidate) => candidate.version === version);
+  if (listed.length === 1) {
+    return { line: listed[0], problems: [] };
+  }
+  if (listed.length === 0) {
+    return {
+      line: null,
+      problems: [error(`"${version}" is not listed in SUPPORT.yaml.`)],
+    };
+  }
+  return { line: null, problems: [duplicateProblem(version, listed.length)] };
+}
+
+/**
  * Validate one entry of the "lines" list. Pushes problems into `problems` and
  * returns the clean line object, or null when the entry cannot be used.
  * @param {unknown} entry

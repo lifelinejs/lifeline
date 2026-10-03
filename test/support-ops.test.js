@@ -124,6 +124,36 @@ describe('writeMovedLine', () => {
     ]);
   });
 
+  it('writes nothing when the line being moved is listed twice', async () => {
+    const { cwd, expectedLines } = await setup([
+      { version: '1.x', stage: 'as' },
+    ]);
+    // Another writer added a second entry for the same line. Moving it would
+    // move both, so the write stands down rather than pick one.
+    await replace(
+      cwd,
+      supportYaml([
+        { version: '1.x', stage: 'as' },
+        { version: '1.x', stage: 'indev' },
+      ]),
+    );
+
+    const move = await writeMovedLine({
+      cwd,
+      expectedLines,
+      version: '1.x',
+      stage: 'ls',
+      eol: '2027-03-01',
+    });
+
+    assert.equal(move.path, null);
+    assert.match(move.problems[0].message, /"1\.x" is listed 2 times/);
+    assert.deepEqual(await linesIn(cwd), [
+      { version: '1.x', stage: 'as' },
+      { version: '1.x', stage: 'indev' },
+    ]);
+  });
+
   it('keeps components another writer changed on the line being moved', async () => {
     const { cwd, expectedLines } = await setup([
       { version: '1.x', stage: 'as' },

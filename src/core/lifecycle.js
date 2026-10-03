@@ -15,7 +15,7 @@ import {
   branchFor,
 } from './stages.js';
 import { error } from './problems.js';
-import { isEolDate } from './support.js';
+import { isEolDate, oneLine } from './support.js';
 
 /** The stages `lifeline promote` can move a line to. */
 export const PROMOTE_TARGETS = ['as', 'ls'];
@@ -279,14 +279,8 @@ function lookup(lines, version) {
       problems: [error(`"${version}" is not a line; use 1.x or v1.x.`)],
     };
   }
-  const line = lines.find((candidate) => candidate.version === normalized);
-  if (!line) {
-    return {
-      line: null,
-      problems: [error(`"${normalized}" is not listed in SUPPORT.yaml.`)],
-    };
-  }
-  return { line, problems: [] };
+  const { line, problems } = oneLine(lines, normalized);
+  return { line, problems };
 }
 
 /**

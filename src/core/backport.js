@@ -4,6 +4,7 @@
 // a commit into a plan, and it returns problems instead of throwing them.
 
 import { error } from './problems.js';
+import { oneLine } from './support.js';
 
 /** The stages a fix may be backported into. */
 export const BACKPORT_STAGES = ['as', 'ls'];
@@ -43,12 +44,12 @@ export const LS_LABELS = ['security', 'critical'];
  *   problems: import('./problems.js').Problem[]}}
  */
 export function resolveTarget(lines, version, { label = null } = {}) {
-  const line = lines.find((candidate) => candidate.version === version);
+  const { line, problems: notFound } = oneLine(lines, version);
   if (!line) {
-    return {
-      target: null,
-      problems: [error(`"${version}" is not listed in SUPPORT.yaml.`)],
-    };
+    // Not listed at all, or listed more than once: either way there is no one
+    // line to say whether it takes fixes, and the rules below would be reading
+    // whichever entry happened to come first.
+    return { target: null, problems: notFound };
   }
 
   if (line.stage === 'indev') {

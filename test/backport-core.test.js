@@ -37,6 +37,20 @@ describe('resolveTarget', () => {
     assert.match(problems[0].message, /"9\.x" is not listed/);
   });
 
+  it('says no to a line the file lists twice', () => {
+    // One entry says ls and one says el. Reading the first would allow a
+    // backport to a line that has ended, and reading the second would not, so
+    // which entry was read would decide whether the fix could land.
+    const { target, problems } = resolveTarget(
+      [lines[2], { version: '1.x', stage: 'el' }],
+      '1.x',
+      { label: 'security' },
+    );
+
+    assert.equal(target, null);
+    assert.match(problems[0].message, /"1\.x" is listed 2 times/);
+  });
+
   it('says no to a line in development', () => {
     const { target, problems } = resolveTarget(lines, '3.x');
 

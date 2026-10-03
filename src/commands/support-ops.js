@@ -6,6 +6,7 @@
 // commands are left with only the parts that differ.
 
 import { error } from '../core/problems.js';
+import { duplicateProblem } from '../core/support.js';
 import {
   loadSupport,
   renderSupportFile,
@@ -168,6 +169,17 @@ export async function writeMovedLine({
     const overtaken = overtakenBy(expectedLines, current.lines, version);
     if (overtaken) {
       return { path: null, problems: [overtaken] };
+    }
+
+    // Two entries for the line is a contradiction, not a choice to make: the
+    // map below would move both, and the plan that led here was made against
+    // one of them.
+    const listed = current.lines.filter((line) => line.version === version);
+    if (listed.length > 1) {
+      return {
+        path: null,
+        problems: [duplicateProblem(version, listed.length)],
+      };
     }
 
     const updated = current.lines.map((line) =>
