@@ -4,14 +4,7 @@
 // (no file system), so the commands go through here instead.
 
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  open,
-  readFile,
-  realpath,
-  rename,
-  rm,
-  writeFile,
-} from 'node:fs/promises';
+import { link, open, readFile, realpath, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -125,36 +118,110 @@ function renderComponents(components) {
  * @returns {Promise<string>} The path written to.
  */
 export async function writeSupport(cwd, text) {
-  const path = join(cwd, SUPPORT_FILE);
-  // Same directory as the target, so the rename stays on one filesystem.
-  const temporary = join(cwd, `.${SUPPORT_FILE}.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, text, 'utf8');
-    await rename(temporary, path);
-  } catch (writeError) {
-    // Whatever went wrong, do not leave the temporary file behind.
-    await rm(temporary, { force: true }).catch(() => {});
-    throw writeError;
-  }
-  return path;
+  return publish(cwd, text, { exclusive: false });
 }
 
 /**
  * Write SUPPORT.yaml only when the directory has none yet.
  *
- * The `wx` flag makes the create exclusive: it fails with `EEXIST` instead of
- * clobbering a file that is already there, which is what `lifeline init`
- * relies on when it runs without `--force`. Keeping this separate from
- * writeSupport() means the replace path cannot be taken by accident.
+ * The create is exclusive: it fails with `EEXIST` instead of clobbering a file
+ * that is already there, which is what `lifeline init` relies on when it runs
+ * without `--force`. Keeping this separate from writeSupport() means the
+ * replace path cannot be taken by accident.
  *
  * @param {string} cwd
  * @param {string} text
  * @returns {Promise<string>} The path written to.
  */
 export async function createSupport(cwd, text) {
+  return publish(cwd, text, { exclusive: true });
+}
+
+/**
+ * Put one whole file in place, so SUPPORT.yaml is never a half-written file.
+ *
+ * Three steps, in this order, and the order is the point:
+ *
+ * 1. The contents go to a temporary file and are flushed to disk (`sync`)
+ *    before anything is published. A rename that survives a crash while its
+ *    contents do not would leave SUPPORT.yaml truncated, and a truncated policy
+ *    file reads as a broken repository rather than as an interrupted write.
+ * 2. The name is published in one step: `rename` to replace, or `link` to
+ *    create. `link` is what makes the create both atomic and exclusive: it
+ *    fails with EEXIST rather than replacing a file that is already there, and
+ *    SUPPORT.yaml never exists without its contents. It leaves the temporary
+ *    file behind as a second name for the same file, which is why the
+ *    temporary is unlinked afterwards.
+ * 3. The directory itself is flushed, or a crash can undo the rename and leave
+ *    the previous file in place under a name that says it is the new one.
+ *
+ * A run interrupted before step 2 leaves the previous SUPPORT.yaml untouched,
+ * or none at all, and a hidden temporary file; never half of a file.
+ *
+ * `link` needs a file system with hard links. Every common one has them, and
+ * where one does not, the create fails loudly with nothing written rather than
+ * quietly falling back to a write that can be interrupted halfway.
+ *
+ * @param {string} cwd
+ * @param {string} text
+ * @param {{exclusive: boolean}} options `exclusive` fails with EEXIST when
+ *   SUPPORT.yaml is already there, instead of replacing it.
+ * @returns {Promise<string>} The path written to.
+ */
+async function publish(cwd, text, { exclusive }) {
   const path = join(cwd, SUPPORT_FILE);
-  await writeFile(path, text, { encoding: 'utf8', flag: 'wx' });
+  // Same directory as the target, so the rename stays on one filesystem.
+  const temporary = join(cwd, `.${SUPPORT_FILE}.${randomUUID()}.tmp`);
+  let handle;
+  try {
+    // "wx" so a temporary file left behind by a killed run is never reused.
+    handle = await open(temporary, 'wx');
+    await handle.writeFile(text, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = null;
+
+    if (exclusive) {
+      await link(temporary, path);
+      await rm(temporary, { force: true });
+    } else {
+      await rename(temporary, path);
+    }
+    await syncDirectory(cwd);
+  } catch (writeError) {
+    // Whatever went wrong, do not leave the temporary file behind. The file at
+    // `path` is either untouched or already whole: it was never written to
+    // directly.
+    await rm(temporary, { force: true }).catch(() => {});
+    throw writeError;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
   return path;
+}
+
+/**
+ * Flush a directory entry to disk, so a rename survives a crash.
+ *
+ * Best effort by necessity, not by choice: Windows cannot open a directory as
+ * a file at all, and some other file systems refuse fsync. The file is already
+ * written and published by the time this runs, so failing here would report a
+ * write that did happen as one that did not. What is lost on such a file system
+ * is the name, not the contents.
+ *
+ * @param {string} dir
+ * @returns {Promise<void>}
+ */
+async function syncDirectory(dir) {
+  let handle;
+  try {
+    handle = await open(dir, 'r');
+    await handle.sync();
+  } catch {
+    // Nothing to undo and nothing to report: see above.
+  } finally {
+    await handle?.close().catch(() => {});
+  }
 }
 
 /**

@@ -3,8 +3,11 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import { check } from '../src/commands/check.js';
 import { init, starterLines } from '../src/commands/init.js';
@@ -16,7 +19,25 @@ import {
   writeSupport,
 } from '../src/support-file.js';
 import { parseSupport } from '../src/core/support.js';
-import { git, holdSupportLock, makeGitRepo, makeTempDir } from './helpers.js';
+import { BODY_SIZE } from './fixtures/interrupted-write.js';
+import {
+  git,
+  holdSupportLock,
+  makeGitRepo,
+  makeTempDir,
+  supportYaml,
+} from './helpers.js';
+
+// execFile runs a program without a shell, so nothing in it can be interpreted.
+const execFileAsync = promisify(execFile);
+
+/** The script that writes SUPPORT.yaml under a hard file size limit. */
+const INTERRUPTED_WRITE = fileURLToPath(
+  new URL('./fixtures/interrupted-write.js', import.meta.url),
+);
+
+/** How many 512-byte blocks that write may produce before it is cut off. */
+const FILE_SIZE_BLOCKS = 8;
 
 /** A git stand-in that always answers with the same branch list. */
 function fakeGit(branches) {
@@ -27,6 +48,46 @@ function fakeGit(branches) {
     fetchRemote: async () => {},
     run: async () => '',
   };
+}
+
+/** The lines SUPPORT.yaml holds right now, without the absent keys. */
+async function linesIn(cwd) {
+  const parsed = parseSupport(
+    await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'),
+  );
+  assert.deepEqual(parsed.problems, []);
+  return parsed.lines.map((line) => ({
+    version: line.version,
+    stage: line.stage,
+  }));
+}
+
+/**
+ * Write SUPPORT.yaml in a process of its own, with a hard limit on how large a
+ * file it may write, so that the write is cut off part way through on purpose.
+ *
+ * That limit is what the kernel enforces on the size of a file, which is the
+ * same thing that stops a write on a full disk. It has to be a process of its
+ * own because the limit belongs to a process.
+ *
+ * @param {string[]} args Arguments for the fixture.
+ * @returns {Promise<{written: boolean, code: string | null}>} What the fixture
+ *   says happened, so a test cannot pass on a write that was never in trouble.
+ */
+async function writeUnderSizeLimit(args) {
+  // The shell applies the limit and then hands over to the fixture, so the limit
+  // is the only thing between the two. `$0` is the shell's own name, so the
+  // limit is `$1` and the command is everything after it.
+  const { stdout } = await execFileAsync('/bin/sh', [
+    '-c',
+    'ulimit -f "$1"; shift; exec "$@"',
+    'lifeline-test',
+    String(FILE_SIZE_BLOCKS),
+    process.execPath,
+    INTERRUPTED_WRITE,
+    ...args,
+  ]);
+  return JSON.parse(stdout);
 }
 
 test('devel on its own becomes a 1.x line in development', () => {
@@ -148,6 +209,67 @@ test('createSupport refuses an existing file, writeSupport replaces it', async (
   await writeSupport(cwd, 'new\n');
   assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), 'new\n');
   assert.deepEqual(await readdir(cwd), ['SUPPORT.yaml']);
+});
+
+test('createSupport publishes the file whole and leaves nothing behind', async () => {
+  const cwd = await makeTempDir();
+
+  await createSupport(cwd, supportYaml([{ version: '1.x', stage: 'indev' }]));
+
+  // The exclusive create goes through a temporary file too, so a file that is
+  // not there yet is never a file that is half there.
+  assert.deepEqual(await linesIn(cwd), [{ version: '1.x', stage: 'indev' }]);
+  assert.deepEqual(await readdir(cwd), ['SUPPORT.yaml']);
+});
+
+// The next two tests cut a write off part way through, which needs a limit the
+// kernel enforces, and that means a POSIX shell to set it. Windows has no
+// equivalent that can be set from a test, so these do not run there.
+const needsPosixShell = {
+  skip: process.platform === 'win32' ? 'needs sh' : false,
+};
+
+test(
+  'a create that is cut off leaves no SUPPORT.yaml at all',
+  needsPosixShell,
+  async () => {
+    const cwd = await makeTempDir();
+
+    const report = await writeUnderSizeLimit([cwd, 'create']);
+
+    // The write really was stopped: without this the test would also pass on a
+    // machine where the limit never took effect.
+    assert.equal(report.written, false);
+    assert.equal(report.code, 'EFBIG');
+    // Nothing was published and nothing was left behind. A create that wrote
+    // straight into SUPPORT.yaml leaves the first few kilobytes of the file
+    // there, which every later command then reads as a broken policy file.
+    assert.deepEqual(await readdir(cwd), []);
+  },
+);
+
+test(
+  'a replace that is cut off leaves the old file whole',
+  needsPosixShell,
+  async () => {
+    const before = supportYaml([{ version: '1.x', stage: 'indev' }]);
+    const cwd = await makeTempDir({ 'SUPPORT.yaml': before });
+
+    const report = await writeUnderSizeLimit([cwd, 'replace']);
+
+    assert.equal(report.written, false);
+    assert.equal(report.code, 'EFBIG');
+    // The file that was there before the interrupted write is still there, the
+    // whole of it, and the write that failed left no temporary file behind.
+    assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), before);
+    assert.deepEqual(await readdir(cwd), ['SUPPORT.yaml']);
+  },
+);
+
+test('a whole file that got through is longer than the limit that stopped one', () => {
+  // The limit above is a few kilobytes; the fixture's body is much bigger, so a
+  // write that was never stopped would have had to be whole to fit through.
+  assert.ok(BODY_SIZE > FILE_SIZE_BLOCKS * 512);
 });
 
 test('a SUPPORT.yaml that appears mid-run is refused, not clobbered', async () => {
