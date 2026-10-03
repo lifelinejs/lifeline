@@ -219,8 +219,9 @@ async function runBackport(sha, _options, command) {
     cwd,
     git: createGit({ cwd, remote: options.remote }),
     // Only this line knows which forge we use; an Octokit version later would
-    // change nothing else.
-    forge: createGithubForge({ cwd }),
+    // change nothing else. The forge is bound to the same remote as the
+    // backport, so the pull request lands in the repository we pushed to.
+    forge: createGithubForge({ cwd, remote: options.remote }),
     remote: options.remote,
     sha,
     to: options.to,

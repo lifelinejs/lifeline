@@ -6,8 +6,12 @@ import { delimiter, join } from 'node:path';
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
-import { createGithubForge, preflight } from '../src/forge/github.js';
-import { makeTempDir } from './helpers.js';
+import {
+  createGithubForge,
+  parseRepositoryUrl,
+  preflight,
+} from '../src/forge/github.js';
+import { git, makeTempDir } from './helpers.js';
 
 // The fake tool answers whatever the test asks it to, through environment
 // variables it inherits from this process.
@@ -42,6 +46,22 @@ let logPath = '';
 
 /** The PATH as it was before any test put a fake gh on it, or null. */
 let originalPath = null;
+
+/**
+ * A throwaway repository with two GitHub remotes, so a forge has a real
+ * remote to bind its pull requests to.
+ * @returns {Promise<string>} The repository directory.
+ */
+async function makeGitHubRepo() {
+  const cwd = await makeTempDir();
+  await git(['init', '-q', '-b', 'devel'], cwd);
+  await git(['remote', 'add', 'origin', 'git@github.com:org/one.git'], cwd);
+  await git(
+    ['remote', 'add', 'upstream', 'https://github.com/org/two.git'],
+    cwd,
+  );
+  return cwd;
+}
 
 /**
  * Put a fake `gh` at the front of PATH, and tidy the environment again later.
@@ -121,8 +141,9 @@ describe('github forge preflight', () => {
 
 describe('github forge pull requests', () => {
   it('passes the request to gh as separate arguments', async () => {
+    const cwd = await makeGitHubRepo();
     await useFakeGh();
-    const forge = createGithubForge();
+    const forge = createGithubForge({ cwd });
 
     const result = await forge.createPullRequest({
       base: 'ls/v1.x',
@@ -136,15 +157,16 @@ describe('github forge pull requests', () => {
     const logged = await readFile(logPath, 'utf8');
     assert.match(
       logged,
-      /pr create --base ls\/v1\.x --head backport\/1\.x\/abc1234/,
+      /pr create --repo github\.com\/org\/one --base ls\/v1\.x --head backport\/1\.x\/abc1234/,
     );
     assert.match(logged, /--title \[v1\.x\] fix: a thing/);
     assert.match(logged, /--label security/);
   });
 
   it('omits --label when there are no labels', async () => {
+    const cwd = await makeGitHubRepo();
     await useFakeGh();
-    const forge = createGithubForge();
+    const forge = createGithubForge({ cwd });
 
     await forge.createPullRequest({
       base: 'as/v2.x',
@@ -158,12 +180,13 @@ describe('github forge pull requests', () => {
   });
 
   it('reports what gh said when the pull request fails', async () => {
+    const cwd = await makeGitHubRepo();
     await useFakeGh();
     process.env.LIFELINE_TEST_GH_PR_FAIL = '1';
     try {
       await assert.rejects(
         () =>
-          createGithubForge().createPullRequest({
+          createGithubForge({ cwd }).createPullRequest({
             base: 'as/v2.x',
             head: 'backport/2.x/abc1234',
             title: 'A title',
@@ -178,5 +201,106 @@ describe('github forge pull requests', () => {
     } finally {
       delete process.env.LIFELINE_TEST_GH_PR_FAIL;
     }
+  });
+});
+
+describe('binding pull requests to a remote', () => {
+  it('names the repository the selected remote points at', async () => {
+    const cwd = await makeGitHubRepo();
+    await useFakeGh();
+    const forge = createGithubForge({ cwd, remote: 'upstream' });
+
+    await forge.createPullRequest({
+      base: 'as/v2.x',
+      head: 'backport/2.x/abc1234',
+      title: 'A title',
+      body: 'A body',
+      labels: [],
+    });
+
+    const logged = await readFile(logPath, 'utf8');
+    assert.match(
+      logged,
+      /pr create --repo github\.com\/org\/two --base as\/v2\.x/,
+    );
+  });
+
+  it('refuses when the remote is not a GitHub repository', async () => {
+    const cwd = await makeTempDir();
+    await git(['init', '-q', '-b', 'devel'], cwd);
+    await git(['remote', 'add', 'origin', '/srv/mirror/lifeline.git'], cwd);
+    await useFakeGh();
+
+    await assert.rejects(
+      () =>
+        createGithubForge({ cwd }).createPullRequest({
+          base: 'as/v2.x',
+          head: 'backport/2.x/abc1234',
+          title: 'A title',
+          body: 'A body',
+        }),
+      (thrown) => {
+        assert.match(thrown.message, /not a repository URL/);
+        return true;
+      },
+    );
+
+    // gh was never asked to create anything.
+    await assert.rejects(() => readFile(logPath, 'utf8'));
+  });
+
+  it('fails the preflight when the remote is not configured', async () => {
+    const cwd = await makeTempDir();
+    await git(['init', '-q', '-b', 'devel'], cwd); // no remotes at all
+    await useFakeGh();
+
+    await assert.rejects(
+      () => createGithubForge({ cwd }).preflight(),
+      (thrown) => {
+        assert.match(thrown.message, /remote "origin" is not configured/);
+        return true;
+      },
+    );
+  });
+});
+
+describe('reading a repository out of a remote URL', () => {
+  it('handles the URL shapes git allows', () => {
+    assert.equal(
+      parseRepositoryUrl('https://github.com/org/repo.git'),
+      'github.com/org/repo',
+    );
+    assert.equal(
+      parseRepositoryUrl('https://user@github.com/org/repo'),
+      'github.com/org/repo',
+    );
+    assert.equal(
+      parseRepositoryUrl('git@github.com:org/repo.git'),
+      'github.com/org/repo',
+    );
+    assert.equal(
+      parseRepositoryUrl('ssh://git@github.com/org/repo'),
+      'github.com/org/repo',
+    );
+    assert.equal(
+      parseRepositoryUrl('git://github.com/org/repo.git'),
+      'github.com/org/repo',
+    );
+    assert.equal(
+      parseRepositoryUrl('https://github.example.com/org/repo/'),
+      'github.example.com/org/repo',
+    );
+  });
+
+  it('refuses anything that is not a repository URL', () => {
+    assert.throws(() => parseRepositoryUrl('/srv/mirror/repo.git'), {
+      message: /not a repository URL/,
+    });
+    assert.throws(() => parseRepositoryUrl('../sibling/repo'), {
+      message: /not a repository URL/,
+    });
+    assert.throws(() => parseRepositoryUrl(''), {
+      message: /not a repository URL/,
+    });
   });
 });

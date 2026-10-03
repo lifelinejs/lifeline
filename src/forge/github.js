@@ -51,6 +51,72 @@ export async function preflight({ cwd } = {}) {
 }
 
 /**
+ * Turn a remote URL into gh's [HOST/]OWNER/REPO form.
+ *
+ * Understands the shapes git accepts for a GitHub remote: https, ssh, git://
+ * and the scp-like `git@host:owner/repo`. Exported for the tests.
+ *
+ * @param {string} url What `git remote get-url` printed.
+ * @param {string} [remote] The remote's name; only used in the error message.
+ * @returns {string} For example "github.com/org/repo".
+ * @throws {Error} When the URL is not a repository URL gh could use.
+ */
+export function parseRepositoryUrl(url, remote = 'origin') {
+  const trimmed = url.trim().replace(/\.git$/, '');
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    // A scheme URL: https://github.com/org/repo, ssh://git@github.com/org/repo.
+    try {
+      const parsed = new URL(trimmed);
+      const path = parsed.pathname.replace(/^\/+|\/+$/g, '');
+      if (parsed.hostname && path) {
+        return `${parsed.hostname}/${path}`;
+      }
+    } catch {
+      // Malformed URL; fall through to the error below.
+    }
+  } else {
+    // The scp-like syntax git also allows: git@github.com:org/repo.
+    const scp = trimmed.match(/^(?:[^@]+@)?([^:/]+):(.+)$/);
+    if (scp) {
+      return `${scp[1]}/${scp[2].replace(/^\/+/, '')}`;
+    }
+  }
+
+  throw new Error(
+    `remote "${remote}" points at ${JSON.stringify(url.trim())}, which is not ` +
+      'a repository URL; pull requests need an https or ssh GitHub remote.',
+  );
+}
+
+/**
+ * The repository a git remote points at, in the form gh wants it.
+ *
+ * The pull request is created for the remote the backport was validated and
+ * pushed to, never for whatever repository gh would guess from the checkout:
+ * in a checkout with several remotes, those can be different repositories.
+ *
+ * @param {{cwd?: string, remote?: string}} options
+ * @returns {Promise<string>} For example "github.com/org/repo".
+ * @throws {Error} When the remote is missing or cannot be read as a GitHub URL.
+ */
+export async function repositoryForRemote({ cwd, remote = 'origin' } = {}) {
+  let url;
+  try {
+    ({ stdout: url } = await execFileAsync(
+      'git',
+      ['remote', 'get-url', remote],
+      { cwd },
+    ));
+  } catch {
+    throw new Error(
+      `remote "${remote}" is not configured; a pull request needs a GitHub remote.`,
+    );
+  }
+  return parseRepositoryUrl(url, remote);
+}
+
+/**
  * Open a pull request.
  *
  * @param {object} request
@@ -60,6 +126,9 @@ export async function preflight({ cwd } = {}) {
  * @param {string} request.body
  * @param {string[]} [request.labels]
  * @param {string} [request.cwd] Repository to work in.
+ * @param {string | null} [request.repo] Repository in HOST/OWNER/REPO form to
+ *   create the pull request in. Omitted only when the caller has no remote to
+ *   name, which gh's own guess is not good enough to fall back on silently.
  * @returns {Promise<{url: string}>} Where the pull request ended up.
  */
 export async function createPullRequest({
@@ -69,21 +138,17 @@ export async function createPullRequest({
   body,
   labels = [],
   cwd,
+  repo = null,
 }) {
   // Every argument is one array entry, so nothing in a title can be read as a
   // shell command. No shell is started at all.
-  const args = [
-    'pr',
-    'create',
-    '--base',
-    base,
-    '--head',
-    head,
-    '--title',
-    title,
-    '--body',
-    body,
-  ];
+  const args = ['pr', 'create'];
+  // Name the repository outright: without --repo, gh picks one from the
+  // checkout, which need not be the remote this backport was pushed to.
+  if (repo) {
+    args.push('--repo', repo);
+  }
+  args.push('--base', base, '--head', head, '--title', title, '--body', body);
   for (const label of labels) {
     args.push('--label', label);
   }
@@ -104,12 +169,26 @@ export async function createPullRequest({
 
 /**
  * Build the forge object commands receive.
- * @param {{cwd?: string}} [options]
+ *
+ * Everything it does is bound to `remote`: the repository it names for a
+ * pull request is the one that remote points at, so a checkout with several
+ * remotes cannot send a backport to the wrong repository.
+ *
+ * @param {{cwd?: string, remote?: string}} options
  * @returns {Forge}
  */
-export function createGithubForge({ cwd } = {}) {
+export function createGithubForge({ cwd, remote = 'origin' } = {}) {
   return {
-    preflight: () => preflight({ cwd }),
-    createPullRequest: (request) => createPullRequest({ ...request, cwd }),
+    preflight: async () => {
+      await preflight({ cwd });
+      // Settle which repository the pull request would go to as well, before
+      // any branch is made: a remote we cannot name must stop the backport
+      // here, not halfway through.
+      await repositoryForRemote({ cwd, remote });
+    },
+    createPullRequest: async (request) => {
+      const repo = await repositoryForRemote({ cwd, remote });
+      return createPullRequest({ ...request, cwd, repo });
+    },
   };
 }
