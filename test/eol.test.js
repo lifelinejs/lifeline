@@ -174,6 +174,52 @@ describe('eol happy path', () => {
 });
 
 describe('eol refusals', () => {
+  for (const force of [false, true]) {
+    it(`stops before pushing or writing when the remote tag lookup fails with force=${force}`, async () => {
+      const cwd = await setup({
+        branches: force ? ['ls/v1.x', 'el/v1.x'] : ['ls/v1.x'],
+      });
+      const before = await readSupportFile(cwd);
+      const refsBefore = await remoteRefs(cwd);
+      const realGit = createGit({ cwd });
+      const calls = [];
+      const result = await run(cwd, {
+        force,
+        write: true,
+        git: {
+          ...realGit,
+          run: async (args) => {
+            calls.push(args);
+            if (args[0] === 'ls-remote') {
+              throw Object.assign(new Error('Command failed'), {
+                stderr: 'remote lookup unavailable\n',
+              });
+            }
+            return realGit.run(args);
+          },
+        },
+      });
+
+      assert.equal(result.exitCode, 1);
+      assert.deepEqual(result.problems, [
+        {
+          level: 'error',
+          message:
+            'git ls-remote --tags origin refs/tags/v1.x-eol failed: remote lookup unavailable',
+        },
+      ]);
+      assert.equal(result.branchExisted, force);
+      assert.equal(result.pushed, false);
+      assert.equal(result.written, false);
+      assert.equal(
+        calls.some((args) => args[0] === 'push'),
+        false,
+      );
+      assert.equal(await remoteRefs(cwd), refsBefore);
+      assert.equal(await readSupportFile(cwd), before);
+    });
+  }
+
   it('refuses a line in development', async () => {
     const cwd = await setup({
       support: supportYaml([{ version: '3.x', stage: 'indev' }]),

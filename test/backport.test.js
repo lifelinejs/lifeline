@@ -422,6 +422,69 @@ describe('backport conflicts', () => {
 });
 
 describe('backport failures that are not conflicts', () => {
+  it('restores the starting detached commit and removes the backport branch', async () => {
+    const { cwd, sha } = await setup({
+      branchFiles: {
+        'as/v1.x': { 'src/fix.js': 'export const fixed = true;\n' },
+      },
+    });
+    // Start at a different commit from both the fix and the support branch.
+    await git(['checkout', '--detach', 'devel~1'], cwd);
+    const before = (await git(['rev-parse', 'HEAD'], cwd)).trim();
+
+    const { result, forge } = await run(cwd, { overrides: { sha } });
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.problems[0].message, /git cherry-pick failed/);
+    assert.equal(result.conflict, null);
+    assert.equal(result.pushed, false);
+    assert.equal(forge.calls.length, 0);
+    assert.deepEqual(result.steps, []);
+    assert.equal((await git(['rev-parse', 'HEAD'], cwd)).trim(), before);
+    assert.equal(
+      (await git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)).trim(),
+      'HEAD',
+    );
+    assert.equal(
+      (await git(['branch', '--list', 'backport/1.x/*'], cwd)).trim(),
+      '',
+    );
+    assert.equal(await fileExists(`${cwd}/.git/CHERRY_PICK_HEAD`), false);
+    assert.equal((await git(['status', '--porcelain'], cwd)).trim(), '');
+  });
+
+  for (const detached of [false, true]) {
+    it(`reports the failed cleanup checkout with detached HEAD=${detached}`, async () => {
+      const { cwd, sha } = await setup({
+        branchFiles: {
+          'as/v1.x': { 'src/fix.js': 'export const fixed = true;\n' },
+        },
+      });
+      if (detached) await git(['checkout', '--detach', 'devel~1'], cwd);
+      const before = (await git(['rev-parse', 'HEAD'], cwd)).trim();
+      const realGit = createGit({ cwd });
+      const { result } = await run(cwd, {
+        overrides: {
+          sha,
+          git: {
+            ...realGit,
+            run: async (args) => {
+              if (args[0] === 'checkout' && args[1] !== '-b') {
+                throw new Error('checkout failed');
+              }
+              return realGit.run(args);
+            },
+          },
+        },
+      });
+
+      assert.equal(result.exitCode, 1);
+      assert.deepEqual(result.steps, [
+        `Clean up by hand: git checkout ${detached ? `--detach ${before}` : 'devel'}; git branch -D ${result.plan.branch}`,
+      ]);
+    });
+  }
+
   it('puts the repository back on the branch it came from', async () => {
     // The support branch already holds the fix, so the cherry-pick comes out
     // empty: a failure with no unmerged files to resolve.

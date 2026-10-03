@@ -201,7 +201,9 @@ export async function backport({
   // Where the user was before, so a failure can put them back there.
   const previousBranch = await currentBranchName(git);
 
+  let previousSha;
   try {
+    previousSha = (await git.run(['rev-parse', 'HEAD'])).trim();
     await git.run(['checkout', '-b', plan.branch, plan.baseRef]);
   } catch (checkoutError) {
     return stopped(plan, [error(gitMessage(checkoutError))], 1);
@@ -229,7 +231,12 @@ export async function backport({
     // Not a conflict: nothing here is worth keeping, so put the repository
     // back on the branch the user started from and drop the half-made branch
     // rather than leaving them stranded on plan.branch.
-    const cleanup = await undoBackportBranch(git, previousBranch, plan.branch);
+    const cleanup = await undoBackportBranch(
+      git,
+      previousBranch,
+      previousSha,
+      plan.branch,
+    );
     return {
       ...stopped(
         plan,
@@ -330,8 +337,8 @@ async function currentBranchName(git) {
 
 /**
  * Undo the backport branch after a cherry-pick that failed for anything other
- * than a conflict: clear any half-finished pick, go back to the branch the
- * user was on, and delete the branch that was cut for the backport.
+ * than a conflict: clear any half-finished pick, restore the starting branch
+ * or detached commit, and delete the branch that was cut for the backport.
  *
  * Every step is best effort. Whatever could not be undone comes back as a
  * line for the user to run, so a failure never leaves the repository stranded
@@ -339,10 +346,11 @@ async function currentBranchName(git) {
  *
  * @param {import('../git/git.js').Git} git
  * @param {string | null} previousBranch Branch HEAD was on before, if any.
+ * @param {string} previousSha Commit HEAD pointed to before the backport.
  * @param {string} branch The backport branch to drop.
  * @returns {Promise<string[]>} What is left to do; empty when all went.
  */
-async function undoBackportBranch(git, previousBranch, branch) {
+async function undoBackportBranch(git, previousBranch, previousSha, branch) {
   try {
     // Also clears CHERRY_PICK_HEAD when the pick got far enough to leave one.
     // Git refuses when there is nothing to abort, which is fine here.
@@ -352,12 +360,13 @@ async function undoBackportBranch(git, previousBranch, branch) {
   }
 
   const missed = [];
-  if (previousBranch) {
-    try {
-      await git.run(['checkout', previousBranch]);
-    } catch {
-      missed.push(`git checkout ${previousBranch}`);
-    }
+  const checkout = previousBranch
+    ? ['checkout', previousBranch]
+    : ['checkout', '--detach', previousSha];
+  try {
+    await git.run(checkout);
+  } catch {
+    missed.push(`git ${checkout.join(' ')}`);
   }
   try {
     await git.run(['branch', '-D', branch]);
