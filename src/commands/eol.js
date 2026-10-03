@@ -101,7 +101,9 @@ export async function eol({
   }
 
   const branchExisted = await git.branchExists(plan.branch);
-  const tagExisted = (await git.tags()).includes(plan.tag);
+  // The tag is made on the remote, so ask the remote whether it is already
+  // there: the local `git tag` list says nothing about the ref that matters.
+  const tagExisted = await remoteTagExists({ git, remote, tag: plan.tag });
   if ((branchExisted || tagExisted) && !force) {
     const already = [
       branchExisted ? `${remote}/${plan.branch}` : null,
@@ -255,6 +257,37 @@ function nextSteps(plan, { dryRun, write, branchExisted, tagExisted, pushed }) {
     'Run "lifeline check" to confirm the file and the branches agree.',
   );
   return steps;
+}
+
+/**
+ * Is `<tag>` already on the remote?
+ *
+ * `git ls-remote --tags` is asked for the exact `refs/tags/<tag>` ref, so the
+ * answer comes from the remote itself rather than from whatever this checkout
+ * happens to have fetched.
+ *
+ * @param {object} options
+ * @param {import('../git/git.js').Git} options.git
+ * @param {string} options.remote
+ * @param {string} options.tag
+ * @returns {Promise<boolean>} True when the remote returns that ref.
+ */
+async function remoteTagExists({ git, remote, tag }) {
+  const ref = `refs/tags/${tag}`;
+  try {
+    const output = await git.run(['ls-remote', '--tags', remote, ref]);
+    return (
+      output
+        .split('\n')
+        .map((line) => line.trim().split(/\s+/)[1])
+        // Exact match, so a peeled `^{}` line or another ref never counts.
+        .some((name) => name === ref)
+    );
+  } catch {
+    // fetchFirst reached the remote a moment ago; with no answer here we
+    // cannot claim the tag exists, and a push would fail loudly if it does.
+    return false;
+  }
 }
 
 /**

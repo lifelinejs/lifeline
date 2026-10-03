@@ -28,6 +28,11 @@ async function setup({
     support,
     withRemote: true,
   });
+  if (tags.length > 0) {
+    // The tag check asks the remote, so a tag the test wants to count as
+    // "already there" has to be there, not only in this checkout.
+    await git(['push', 'origin', '--tags'], cwd);
+  }
   return cwd;
 }
 
@@ -274,6 +279,17 @@ describe('eol with refs that already exist', () => {
 
     assert.equal(refused.exitCode, 1);
     assert.match(refused.problems[0].message, /v1\.x-eol already exists/);
+  });
+
+  it('ignores a tag that exists only in this checkout', async () => {
+    const cwd = await setup();
+    await git(['tag', 'v1.x-eol'], cwd); // local only: origin does not have it
+
+    const result = await run(cwd, { date: '2027-02-01' });
+
+    assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+    assert.equal(result.tagExisted, false);
+    assert.match(await remoteRefs(cwd), /refs\/tags\/v1\.x-eol$/m);
   });
 
   it('with --force and both refs there, it only rewrites the file', async () => {
