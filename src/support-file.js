@@ -225,7 +225,14 @@ export async function withSupportLock(cwd, work) {
 
   try {
     // The process id, so a lock that is still there can be traced to a run.
-    await handle.writeFile(`${process.pid}\n`, 'utf8');
+    try {
+      await handle.writeFile(`${process.pid}\n`, 'utf8');
+    } catch (writeError) {
+      return {
+        ok: false,
+        problem: error(`Could not write lock ${path}: ${writeError.message}`),
+      };
+    }
     return { ok: true, value: await work() };
   } finally {
     // Every way out releases: the value on its way back, or a throw.

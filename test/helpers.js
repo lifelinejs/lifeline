@@ -150,8 +150,10 @@ export async function makeGitRepo({
  */
 export function holdSupportLock(cwd) {
   let acquired;
-  const gotIt = new Promise((resolve) => {
+  let acquisitionFailed;
+  const gotIt = new Promise((resolve, reject) => {
     acquired = resolve;
+    acquisitionFailed = reject;
   });
   let release;
   const held = new Promise((resolve) => {
@@ -163,6 +165,11 @@ export function holdSupportLock(cwd) {
     finished: withSupportLock(cwd, async () => {
       acquired();
       await held;
+    }).then((result) => {
+      if (!result.ok) {
+        acquisitionFailed(result.problem);
+      }
+      return result;
     }),
   };
 }

@@ -49,6 +49,7 @@ const MAX_BUFFER = 10 * 1024 * 1024;
 async function git(args, options) {
   const { stdout } = await execFileAsync('git', args, {
     cwd: options.cwd,
+    env: { ...process.env, LC_ALL: 'C' },
     maxBuffer: MAX_BUFFER,
   });
   return stdout;
