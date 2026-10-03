@@ -2,7 +2,7 @@
 // tool, so no test needs GitHub installed, logged in, or reachable.
 
 import { chmod, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 
@@ -40,6 +40,9 @@ exit 0
 /** Where the fake gh logs its arguments, for the tests to read back. */
 let logPath = '';
 
+/** The PATH as it was before any test put a fake gh on it, or null. */
+let originalPath = null;
+
 /**
  * Put a fake `gh` at the front of PATH, and tidy the environment again later.
  * @returns {Promise<void>}
@@ -51,12 +54,21 @@ async function useFakeGh() {
   await chmod(script, 0o755);
   logPath = join(dir, 'gh.log');
 
-  process.env.PATH = `${dir}:${process.env.PATH}`;
+  // Remember the real PATH once, before the first fake is put on it, so the
+  // after hook can restore it exactly.
+  if (originalPath === null) {
+    originalPath = process.env.PATH;
+  }
+  process.env.PATH = `${dir}${delimiter}${process.env.PATH}`;
   process.env.LIFELINE_TEST_GH_LOG = logPath;
   process.env.LIFELINE_TEST_GH_PR_URL = 'https://github.test/org/repo/pull/12';
 }
 
 after(async () => {
+  if (originalPath !== null) {
+    process.env.PATH = originalPath;
+    originalPath = null;
+  }
   delete process.env.LIFELINE_TEST_GH_LOG;
   delete process.env.LIFELINE_TEST_GH_PR_URL;
   delete process.env.LIFELINE_TEST_GH_AUTH_FAIL;
