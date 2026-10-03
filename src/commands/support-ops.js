@@ -9,6 +9,7 @@ import { error } from '../core/problems.js';
 import {
   loadSupport,
   renderSupportFile,
+  withSupportLock,
   writeSupport,
 } from '../support-file.js';
 
@@ -127,6 +128,10 @@ export async function remoteRef({ git, remote, kind, name }) {
  * where the plan found it, the push this write was to record has been overtaken
  * and nothing is written: the run says so instead.
  *
+ * The reread, that comparison and the write all happen under the support lock,
+ * so a second command in this checkout cannot read the same file and then write
+ * over this one.
+ *
  * The file is rendered from scratch, so it comes back in Lifeline's canonical
  * shape. Comments and any key Lifeline does not know about do not survive.
  *
@@ -139,8 +144,8 @@ export async function remoteRef({ git, remote, kind, name }) {
  * @param {string} [options.eol] Its end-of-life date, when it has one.
  * @returns {Promise<{path: string | null,
  *   problems: import('../core/problems.js').Problem[]}>} The path written to, or
- *   null with problems when the file changed underneath and nothing was
- *   written.
+ *   null with problems when the lock could not be taken or the file changed
+ *   underneath, and nothing was written.
  */
 export async function writeMovedLine({
   cwd,
@@ -149,25 +154,29 @@ export async function writeMovedLine({
   stage,
   eol,
 }) {
-  const current = await readSupport(cwd);
-  if (!current.ok) {
-    return { path: null, problems: current.problems };
-  }
+  const locked = await withSupportLock(cwd, async () => {
+    const current = await readSupport(cwd);
+    if (!current.ok) {
+      return { path: null, problems: current.problems };
+    }
 
-  const overtaken = overtakenBy(expectedLines, current.lines, version);
-  if (overtaken) {
-    return { path: null, problems: [overtaken] };
-  }
+    const overtaken = overtakenBy(expectedLines, current.lines, version);
+    if (overtaken) {
+      return { path: null, problems: [overtaken] };
+    }
 
-  const updated = current.lines.map((line) =>
-    line.version === version
-      ? { version: line.version, stage, eol, components: line.components }
-      : line,
-  );
-  return {
-    path: await writeSupport(cwd, renderSupportFile(updated)),
-    problems: [],
-  };
+    const updated = current.lines.map((line) =>
+      line.version === version
+        ? { version: line.version, stage, eol, components: line.components }
+        : line,
+    );
+    return {
+      path: await writeSupport(cwd, renderSupportFile(updated)),
+      problems: [],
+    };
+  });
+
+  return locked.ok ? locked.value : { path: null, problems: [locked.problem] };
 }
 
 /**

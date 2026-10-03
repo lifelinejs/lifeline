@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import {
   branchExists,
   createGit,
+  fetchTag,
   isAncestor,
   isClean,
   listBranches,
@@ -75,6 +76,43 @@ test('isClean is false when a file changes', async () => {
   assert.equal(await isClean({ cwd }), true);
   await writeFile(join(cwd, 'README.md'), 'changed\n');
   assert.equal(await isClean({ cwd }), false);
+});
+
+test('fetchTag brings one tag down by name', async () => {
+  const { cwd } = await makeGitRepo({
+    tags: ['v0.x-eol', 'v1.x-eol'],
+    withRemote: true,
+  });
+  await git(['push', 'origin', '--tags'], cwd);
+  await git(['tag', '-d', 'v1.x-eol'], cwd);
+  await git(['config', 'remote.origin.tagOpt', '--no-tags'], cwd);
+
+  const found = await fetchTag({ cwd, remote: 'origin', name: 'v1.x-eol' });
+
+  assert.equal(found, true);
+  assert.ok((await listTags({ cwd })).includes('v1.x-eol'));
+});
+
+test('fetchTag says no when the remote does not have the tag', async () => {
+  const { cwd } = await makeGitRepo({ tags: ['v0.x-eol'], withRemote: true });
+  await git(['push', 'origin', '--tags'], cwd);
+
+  // A tag that is not on the remote is an answer, not a failure: check reports
+  // it as a finding rather than falling over.
+  const found = await fetchTag({ cwd, remote: 'origin', name: 'v9.x-eol' });
+
+  assert.equal(found, false);
+});
+
+test('fetchTag lets a real failure through', async () => {
+  const { cwd } = await makeGitRepo({ withRemote: true });
+  await git(['remote', 'remove', 'origin'], cwd);
+
+  // Not "the tag is missing", but something being wrong: that is not for
+  // fetchTag to swallow.
+  await assert.rejects(() =>
+    fetchTag({ cwd, remote: 'origin', name: 'v1.x-eol' }),
+  );
 });
 
 test('createGit binds every command to one directory', async () => {

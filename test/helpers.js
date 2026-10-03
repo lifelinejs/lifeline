@@ -6,6 +6,8 @@ import { dirname, join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { withSupportLock } from '../src/support-file.js';
+
 const execFileAsync = promisify(execFile);
 
 /**
@@ -135,6 +137,34 @@ export async function makeGitRepo({
   }
 
   return { cwd, remote };
+}
+
+/**
+ * Take the support lock for a directory and hold it until released.
+ *
+ * Tests that need a second Lifeline command to find the file locked start one
+ * of these, wait for `acquired`, and call `release` when they are done.
+ *
+ * @param {string} cwd
+ * @returns {{acquired: Promise<void>, release: () => void, finished: Promise<object>}}
+ */
+export function holdSupportLock(cwd) {
+  let acquired;
+  const gotIt = new Promise((resolve) => {
+    acquired = resolve;
+  });
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  return {
+    acquired: gotIt,
+    release: () => release(),
+    finished: withSupportLock(cwd, async () => {
+      acquired();
+      await held;
+    }),
+  };
 }
 
 /**

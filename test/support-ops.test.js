@@ -5,12 +5,12 @@
 // is what these tests are about: the file can change while a command is in it.
 
 import assert from 'node:assert/strict';
-import { rm, writeFile } from 'node:fs/promises';
+import { readdir, rm, writeFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 
 import { readSupport, writeMovedLine } from '../src/commands/support-ops.js';
-import { loadSupport } from '../src/support-file.js';
-import { makeTempDir, supportYaml } from './helpers.js';
+import { loadSupport, withSupportLock } from '../src/support-file.js';
+import { holdSupportLock, makeTempDir, supportYaml } from './helpers.js';
 
 /**
  * A directory holding one SUPPORT.yaml, and the lines as they read.
@@ -256,6 +256,100 @@ describe('writeMovedLine', () => {
 
     assert.equal(move.path, null);
     assert.match(move.problems[0].message, /not valid YAML/);
+  });
+});
+
+describe('withSupportLock', () => {
+  it('keeps a second writer out, and lets it in once released', async () => {
+    const { cwd, expectedLines } = await setup([
+      { version: '1.x', stage: 'as' },
+      { version: '2.x', stage: 'as' },
+    ]);
+    const lock = holdSupportLock(cwd);
+    await lock.acquired;
+
+    const refused = await writeMovedLine({
+      cwd,
+      expectedLines,
+      version: '1.x',
+      stage: 'ls',
+      eol: '2027-03-01',
+    });
+
+    // Failing closed: no write, and a word about who holds the lock.
+    assert.equal(refused.path, null);
+    assert.equal(refused.problems.length, 1);
+    assert.match(refused.problems[0].message, /Another Lifeline command/);
+    assert.deepEqual(await linesIn(cwd), [
+      { version: '1.x', stage: 'as' },
+      { version: '2.x', stage: 'as' },
+    ]);
+
+    lock.release();
+    await lock.finished;
+
+    const written = await writeMovedLine({
+      cwd,
+      expectedLines,
+      version: '1.x',
+      stage: 'ls',
+      eol: '2027-03-01',
+    });
+    assert.deepEqual(written.problems, []);
+    assert.equal(written.path, `${cwd}/SUPPORT.yaml`);
+  });
+
+  it('leaves nothing behind in the directory it guards', async () => {
+    const { cwd, expectedLines } = await setup([
+      { version: '1.x', stage: 'as' },
+      { version: '2.x', stage: 'as' },
+    ]);
+
+    await writeMovedLine({
+      cwd,
+      expectedLines,
+      version: '1.x',
+      stage: 'ls',
+      eol: '2027-03-01',
+    });
+
+    // The lock belongs to the machine, not to the repository: nothing here can
+    // make the working tree look dirty.
+    assert.deepEqual(await readdir(cwd), ['SUPPORT.yaml']);
+
+    // And the first write gave the lock back, so the second one gets in.
+    assert.deepEqual(
+      (
+        await writeMovedLine({
+          cwd,
+          expectedLines,
+          version: '2.x',
+          stage: 'el',
+          eol: '2027-06-01',
+        })
+      ).problems,
+      [],
+    );
+    assert.deepEqual(await linesIn(cwd), [
+      { version: '1.x', stage: 'ls', eol: '2027-03-01' },
+      { version: '2.x', stage: 'el', eol: '2027-06-01' },
+    ]);
+  });
+
+  it('releases the lock when the work throws', async () => {
+    const cwd = await makeTempDir({
+      'SUPPORT.yaml': supportYaml([{ version: '1.x', stage: 'as' }]),
+    });
+
+    await assert.rejects(() =>
+      withSupportLock(cwd, async () => {
+        throw new Error('the write went wrong');
+      }),
+    );
+
+    // The lock is free again, so the next writer is not locked out for good.
+    const again = await withSupportLock(cwd, async () => 'fine');
+    assert.deepEqual(again, { ok: true, value: 'fine' });
   });
 });
 

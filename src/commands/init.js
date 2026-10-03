@@ -9,6 +9,7 @@ import {
   createSupport,
   loadSupport,
   renderSupportFile,
+  withSupportLock,
   writeSupport,
 } from '../support-file.js';
 
@@ -39,10 +40,36 @@ export function starterLines() {
  * `as|ls|el/vN.x` branch. Nothing at all means a brand new repository, which
  * gets one `1.x` line in development.
  *
+ * The whole run holds the support lock, from asking whether the file is there
+ * to writing it. `init` writes the whole file like the other writers do, so
+ * without the lock it could overwrite a line another command had just moved.
+ *
  * @param {{cwd: string, git: import('../git/git.js').Git, force?: boolean}} options
  * @returns {Promise<InitResult>}
  */
 export async function init({ cwd, git, force = false }) {
+  const locked = await withSupportLock(cwd, () =>
+    writeStarterFile({ cwd, git, force }),
+  );
+  if (locked.ok) {
+    return locked.value;
+  }
+  return {
+    written: false,
+    path: null,
+    text: '',
+    lines: [],
+    problems: [locked.problem],
+    exitCode: 1,
+  };
+}
+
+/**
+ * The work `init` does, with the support lock already held.
+ * @param {{cwd: string, git: import('../git/git.js').Git, force: boolean}} options
+ * @returns {Promise<InitResult>}
+ */
+async function writeStarterFile({ cwd, git, force }) {
   // We read the file first only to find out whether it is there: anything other
   // than "missing" means it exists, and we must not clobber it silently.
   const existing = await loadSupport(cwd);

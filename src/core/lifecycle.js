@@ -8,7 +8,12 @@
 // Like the rest of src/core this file is pure. Problems come back as objects,
 // never as exceptions, so callers decide how to present them.
 
-import { DEVELOPMENT_BRANCH, normalizeLine, branchFor } from './stages.js';
+import {
+  DEVELOPMENT_BRANCH,
+  eolTagName,
+  normalizeLine,
+  branchFor,
+} from './stages.js';
 import { error } from './problems.js';
 import { isEolDate } from './support.js';
 
@@ -233,7 +238,7 @@ export function planEol({ lines, version, date, remote = 'origin' }) {
   const sourceBranch = branchFor(line);
   const sourceRef = `${remote}/${sourceBranch}`;
   const branch = `${END_OF_LIFE}/v${line.version}`;
-  const tag = `v${line.version}-eol`;
+  const tag = eolTagName(line.version);
 
   return {
     plan: {

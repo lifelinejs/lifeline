@@ -7,6 +7,7 @@
 import {
   STAGES,
   branchFor,
+  eolTagName,
   lineFromBranch,
   sortLinesNewestFirst,
   stageIndex,
@@ -303,7 +304,7 @@ function checkEolTags(lines, { tags }) {
     if (line.stage !== 'el') {
       continue;
     }
-    const tag = `v${line.version}-eol`;
+    const tag = eolTagName(line.version);
     if (!existing.has(tag)) {
       problems.push(
         warning(

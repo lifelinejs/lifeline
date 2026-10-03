@@ -23,6 +23,8 @@ const MAX_BUFFER = 10 * 1024 * 1024;
  * @property {() => Promise<string[]>} tags Tag names.
  * @property {() => Promise<boolean>} isClean Is the working tree clean?
  * @property {() => Promise<void>} fetchRemote Run `git fetch <remote>`.
+ * @property {(name: string) => Promise<boolean>} fetchTag Fetch one tag by
+ *   name; false when the remote does not have it.
  * @property {(ref: string) => Promise<boolean>} branchExists Is there a ref?
  * @property {(sha: string, ref: string) => Promise<boolean>} isAncestor
  *   Is `sha` reachable from `ref`?
@@ -125,11 +127,43 @@ export function createGit({ cwd, remote = 'origin' }) {
     tags: () => listTags({ cwd }),
     isClean: () => isClean({ cwd }),
     fetchRemote: () => fetchRemote({ cwd, remote }),
+    fetchTag: (name) => fetchTag({ cwd, remote, name }),
     branchExists: (ref) => branchExists({ cwd, ref }),
     isAncestor: (sha, ref) => isAncestor({ cwd, sha, ref }),
     commit: (ref) => readCommit({ cwd, ref }),
     run: (args) => git(args, { cwd }),
   };
+}
+
+/**
+ * Fetch one tag by name.
+ *
+ * `git fetch <remote>` only follows tags that point into the history it just
+ * fetched, so a tag that is really on the remote can still be missing here: a
+ * repository configured with `tagOpt = --no-tags`, or a tag made since the last
+ * time the commit it points at was fetched. Asking for the tag by name is the
+ * only way to be sure it has arrived.
+ *
+ * A tag the remote does not have is `false`, not a failure: `check` reports
+ * that as a finding of its own. Any other complaint is a real failure and is
+ * thrown, so that a network problem is never read as "there is no tag".
+ *
+ * @param {{cwd: string, remote?: string, name: string}} options
+ * @returns {Promise<boolean>} Whether the tag was fetched.
+ * @throws {Error} When the fetch failed for any reason other than the tag being
+ *   absent from the remote.
+ */
+export async function fetchTag({ cwd, remote = 'origin', name }) {
+  try {
+    await git(['fetch', remote, 'tag', name], { cwd });
+    return true;
+  } catch (fetchError) {
+    // What git says when the ref it was asked for is not there.
+    if (String(fetchError.stderr || '').includes("couldn't find remote ref")) {
+      return false;
+    }
+    throw fetchError;
+  }
 }
 
 /**

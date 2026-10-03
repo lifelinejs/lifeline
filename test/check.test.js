@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 
 import { check } from '../src/commands/check.js';
 import { createGit } from '../src/git/git.js';
-import { makeGitRepo, makeTempDir, supportYaml } from './helpers.js';
+import { git, makeGitRepo, makeTempDir, supportYaml } from './helpers.js';
 
 /** A fixed "today", so day counts do not move while we read this file. */
 const NOW = new Date('2026-01-15T12:00:00Z');
@@ -19,7 +19,7 @@ const NOW = new Date('2026-01-15T12:00:00Z');
  * @param {{branches?: string[], tags?: string[], failWith?: string}} [options]
  */
 function fakeGit({ branches = ['devel'], tags = [], failWith = null } = {}) {
-  const calls = { fetchRemote: 0 };
+  const calls = { fetchRemote: 0, fetchTag: [] };
   const fail = () => {
     throw new Error(failWith);
   };
@@ -33,6 +33,10 @@ function fakeGit({ branches = ['devel'], tags = [], failWith = null } = {}) {
       if (failWith) {
         fail();
       }
+    },
+    fetchTag: async (name) => {
+      calls.fetchTag.push(name);
+      return tags.includes(name);
     },
     run: async () => '',
   };
@@ -212,6 +216,41 @@ test('check does not fetch unless it is asked to', async () => {
   assert.equal(noisy.calls.fetchRemote, 1);
 });
 
+test('check does not fetch unless it is asked to', async () => {
+  const cwd = await makeTempDir({
+    'SUPPORT.yaml': supportYaml([{ version: '2.x', stage: 'indev' }]),
+  });
+  const quiet = fakeGit();
+  const noisy = fakeGit();
+
+  await check({ cwd, git: quiet, now: NOW });
+  await check({ cwd, git: noisy, fetch: true, now: NOW });
+
+  assert.equal(quiet.calls.fetchRemote, 0);
+  assert.equal(noisy.calls.fetchRemote, 1);
+  // Nothing is asked for by name either: only --fetch goes near the network.
+  assert.deepEqual(quiet.calls.fetchTag, []);
+});
+
+test('--fetch asks for the eol tags the file expects', async () => {
+  // `git fetch` does not always bring tags down, so the tags the file is about
+  // to be judged on are asked for by name. `git fetch origin` on its own can
+  // leave a tag that has been on the remote all along missing locally.
+  const cwd = await makeTempDir({
+    'SUPPORT.yaml': supportYaml([
+      { version: '1.x', stage: 'el', eol: '2027-03-01' },
+      { version: '2.x', stage: 'ls' },
+      { version: '3.x', stage: 'indev' },
+    ]),
+  });
+  const git = fakeGit({ branches: ['devel', 'el/v1.x', 'ls/v2.x'] });
+
+  await check({ cwd, git, fetch: true, now: NOW });
+
+  // One per line at stage el: the other lines have no tag of their own.
+  assert.deepEqual(git.calls.fetchTag, ['v1.x-eol']);
+});
+
 test('a git failure becomes a problem, not a crash', async () => {
   const cwd = await makeTempDir({
     'SUPPORT.yaml': supportYaml([{ version: '2.x', stage: 'indev' }]),
@@ -250,6 +289,48 @@ test('an unparsable SUPPORT.yaml is a configuration error: exit 2', async () => 
 });
 
 // Integration tests below: real repositories, real git commands.
+
+test('integration: --fetch brings down an eol tag that a plain fetch misses', async () => {
+  const { cwd } = await makeGitRepo({
+    branches: ['el/v1.x'],
+    support: supportYaml([{ version: '1.x', stage: 'el', eol: '2027-03-01' }]),
+    tags: ['v1.x-eol'],
+    withRemote: true,
+  });
+  await git(['push', 'origin', '--tags'], cwd);
+  await git(['tag', '-d', 'v1.x-eol'], cwd);
+  // A repository that does not follow tags on fetch: `git fetch origin` leaves
+  // the tag list short even though the tag is sitting on the remote. This is
+  // the whole reason the tag is asked for by name.
+  await git(['config', 'remote.origin.tagOpt', '--no-tags'], cwd);
+  const realGit = createGit({ cwd });
+
+  const withoutFetch = await check({ cwd, git: realGit, now: NOW });
+  assert.deepEqual(warnings(withoutFetch.problems), [
+    '"1.x" is at stage el, but there is no v1.x-eol tag.',
+  ]);
+
+  const fetched = await check({ cwd, git: realGit, fetch: true, now: NOW });
+
+  assert.deepEqual(fetched.problems, []);
+});
+
+test('integration: --fetch still reports a tag the remote does not have', async () => {
+  // Asking for a tag that is not there is not an error on its own: not having
+  // the tag is one of the findings check exists to report.
+  const { cwd } = await makeGitRepo({
+    branches: ['el/v1.x'],
+    support: supportYaml([{ version: '1.x', stage: 'el', eol: '2027-03-01' }]),
+    withRemote: true,
+  });
+  const realGit = createGit({ cwd });
+
+  const result = await check({ cwd, git: realGit, fetch: true, now: NOW });
+
+  assert.deepEqual(warnings(result.problems), [
+    '"1.x" is at stage el, but there is no v1.x-eol tag.',
+  ]);
+});
 
 test('integration: a repository whose file and branches agree', async () => {
   const { cwd } = await makeGitRepo({

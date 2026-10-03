@@ -7,6 +7,7 @@
 
 import { checkAgainstRepo, checkLines } from '../core/checks.js';
 import { error } from '../core/problems.js';
+import { eolTagName } from '../core/stages.js';
 import { asAllErrors, exitCodeFor } from '../exit-code.js';
 import { loadSupport } from '../support-file.js';
 
@@ -32,17 +33,49 @@ import { loadSupport } from '../support-file.js';
  * Only local and remote-tracking refs are read, so `check` never touches the
  * network unless `fetch` is true.
  *
- * @param {{git: Git, fetch?: boolean, now?: Date}} options
+ * @param {{git: Git, fetch?: boolean, lines?: import('../core/support.js').Line[],
+ *   now?: Date}} options `lines` is what `--fetch` asks tags for: the file says
+ *   which `vN.x-eol` tags should exist, and `git fetch` alone does not bring
+ *   them down.
  * @returns {Promise<RepoFacts>} Branch and tag names, plus "now".
  */
-export async function readRepoFacts({ git, fetch = false, now = new Date() }) {
+export async function readRepoFacts({
+  git,
+  fetch = false,
+  lines = [],
+  now = new Date(),
+}) {
   if (fetch) {
     await git.fetchRemote();
+    // fetchRemote only follows tags that point into what it fetched, so a tag
+    // that has been on the remote all along can still be missing here. The
+    // rules below ask about the tags the file expects, so ask for those by
+    // name before reading the tag list. A tag the remote does not have is not
+    // an error here: that is one of the findings.
+    for (const tag of expectedEolTags(lines)) {
+      await git.fetchTag(tag);
+    }
   }
   const [branches, tags] = await Promise.all([git.branches(), git.tags()]);
   // The clock is a fact about this run, so it travels with the other facts and
   // tests can hand in their own "today".
   return { branches, tags, now };
+}
+
+/**
+ * The `vN.x-eol` tags the file says should be there: one per line at stage el.
+ * A Set, because two entries for one version would be asked for twice.
+ * @param {import('../core/support.js').Line[]} lines
+ * @returns {string[]}
+ */
+function expectedEolTags(lines) {
+  return [
+    ...new Set(
+      lines
+        .filter((line) => line.stage === 'el')
+        .map((line) => eolTagName(line.version)),
+    ),
+  ];
 }
 
 /**
@@ -66,7 +99,7 @@ export async function check({
   // other problem it found.
   let counts = { lines: loaded.lines.length, branches: 0, tags: 0 };
   try {
-    const facts = await readRepoFacts({ git, fetch, now });
+    const facts = await readRepoFacts({ git, fetch, lines: loaded.lines, now });
     counts = {
       lines: loaded.lines.length,
       branches: facts.branches.length,

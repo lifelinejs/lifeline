@@ -79,6 +79,18 @@ export function branchFor(line) {
 }
 
 /**
+ * The tag that marks the end of a line: "v1.x-eol" for 1.x.
+ *
+ * `eol` creates it, `check` asks whether it is there, and both name it here so
+ * the two cannot drift apart.
+ * @param {string} version A line's version, e.g. "1.x".
+ * @returns {string}
+ */
+export function eolTagName(version) {
+  return `v${version}-eol`;
+}
+
+/**
  * Is this branch name a support branch such as "ls/v1.x"?
  * Note that backport/<line>/<sha> branches are NOT support branches.
  * @param {string} name

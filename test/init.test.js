@@ -16,7 +16,7 @@ import {
   writeSupport,
 } from '../src/support-file.js';
 import { parseSupport } from '../src/core/support.js';
-import { git, makeGitRepo, makeTempDir } from './helpers.js';
+import { git, holdSupportLock, makeGitRepo, makeTempDir } from './helpers.js';
 
 /** A git stand-in that always answers with the same branch list. */
 function fakeGit(branches) {
@@ -188,6 +188,27 @@ test('a git failure writes nothing', async () => {
   assert.equal(result.exitCode, 1);
   assert.match(result.problems[0].message, /Could not read the repository/);
   await assert.rejects(() => readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'));
+});
+
+test('init writes nothing while another command holds the lock', async () => {
+  const cwd = await makeTempDir();
+  const lock = holdSupportLock(cwd);
+  await lock.acquired;
+
+  const result = await init({ cwd, git: fakeGit(['devel']) });
+
+  // init writes the whole file like every other writer, so it must take the
+  // lock too: without it, this could overwrite a line another command had just
+  // moved.
+  assert.equal(result.written, false);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.problems[0].message, /Another Lifeline command/);
+  await assert.rejects(() => readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'));
+
+  lock.release();
+  await lock.finished;
+
+  assert.equal((await init({ cwd, git: fakeGit(['devel']) })).written, true);
 });
 
 // Integration tests below: real repositories and the real git wrapper.
