@@ -242,10 +242,12 @@ export function planEol({ lines, version, date, remote = 'origin' }) {
       to: END_OF_LIFE,
       branch,
       baseRef: sourceRef,
-      // Two refspecs in one push: the frozen branch and the tag, both at the
-      // same commit, so the tag can never point somewhere else.
+      // Two refspecs in one atomic push: the frozen branch and the tag are
+      // both cut from the same commit, and the remote accepts both or
+      // neither, so the tag can never end up pointing somewhere else.
       push: [
         'push',
+        '--atomic',
         remote,
         `${sourceRef}:refs/heads/${branch}`,
         `${sourceRef}:refs/tags/${tag}`,

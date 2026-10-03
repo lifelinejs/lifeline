@@ -8,14 +8,14 @@
 // force-pushes, and nothing is deleted.
 
 import { planEol, validateEolFlags } from '../core/lifecycle.js';
-import { error } from '../core/problems.js';
+import { error, warning } from '../core/problems.js';
 import { normalizeLine } from '../core/stages.js';
 import {
   checkCleanTree,
   fetchFirst,
   gitMessage,
   readSupport,
-  remoteRefExists,
+  remoteRef,
   writeMovedLine,
 } from './support-ops.js';
 
@@ -108,18 +108,20 @@ export async function eol({
   // A lookup that cannot be answered stops the command: guessing here would
   // either push over a ref that is not ours or skip a push that is needed.
   let branchExisted = false;
-  let tagExisted = false;
+  let remoteBranch = null;
+  let remoteTag = null;
   let asked = '';
   try {
     asked = `--heads ${remote} refs/heads/${plan.branch}`;
-    branchExisted = await remoteRefExists({
+    remoteBranch = await remoteRef({
       git,
       remote,
       kind: 'heads',
       name: plan.branch,
     });
+    branchExisted = remoteBranch !== null;
     asked = `--tags ${remote} refs/tags/${plan.tag}`;
-    tagExisted = await remoteRefExists({
+    remoteTag = await remoteRef({
       git,
       remote,
       kind: 'tags',
@@ -134,6 +136,24 @@ export async function eol({
       exitCode: 1,
     });
   }
+  const tagExisted = remoteTag !== null;
+
+  // Both frozen refs are already there, so --force would accept them as they
+  // are. If they point at different commits the freeze is inconsistent
+  // already, and that deserves a word whether or not the run goes ahead.
+  const disagreements = [];
+  if (branchExisted && tagExisted) {
+    const tagCommit = remoteTag.peeled ?? remoteTag.sha;
+    if (tagCommit !== remoteBranch.sha) {
+      disagreements.push(
+        warning(
+          `${plan.branch} and ${plan.tag} point at different commits on ${remote}; ` +
+            'the freeze they describe does not agree. Look at them before relying on it.',
+        ),
+      );
+    }
+  }
+
   if ((branchExisted || tagExisted) && !force) {
     const already = [
       branchExisted ? `${remote}/${plan.branch}` : null,
@@ -146,6 +166,7 @@ export async function eol({
         error(
           `${already.join(' and ')} already exist${already.length === 1 ? 's' : ''}; look at them, then pass --force to accept them as they are.`,
         ),
+        ...disagreements,
       ],
       exitCode: 1,
     });
@@ -155,6 +176,7 @@ export async function eol({
     return result(plan, {
       branchExisted,
       tagExisted,
+      problems: disagreements,
       steps: nextSteps(plan, {
         dryRun: true,
         write,
@@ -167,18 +189,50 @@ export async function eol({
   }
 
   // Push only what is missing. Nothing is ever overwritten, even with --force.
+  //
+  // The frozen branch and the tag have to describe one snapshot, so the
+  // source of a missing ref is chosen carefully:
+  // - neither exists: both are cut from baseRef in one atomic push, so one
+  //   cannot be published without the other;
+  // - only the tag is missing: it marks the branch that was already frozen,
+  //   not a line branch that may have advanced since;
+  // - only the branch is missing: it is cut from the tag that marks the end.
   const refspecs = [];
-  if (!branchExisted) {
+  if (!branchExisted && !tagExisted) {
     refspecs.push(`${plan.baseRef}:refs/heads/${plan.branch}`);
-  }
-  if (!tagExisted) {
     refspecs.push(`${plan.baseRef}:refs/tags/${plan.tag}`);
+  } else if (branchExisted && !tagExisted) {
+    refspecs.push(`${remote}/${plan.branch}:refs/tags/${plan.tag}`);
+  } else if (!branchExisted && tagExisted) {
+    let tagCommit;
+    try {
+      tagCommit = (
+        await git.run(['rev-parse', '--verify', `${plan.tag}^{commit}`])
+      ).trim();
+    } catch {
+      return result(plan, {
+        problems: [
+          error(
+            `${plan.tag} is on ${remote} but not in this checkout, so ${plan.branch} cannot be cut from it here; ` +
+              `run "git fetch ${remote} tag ${plan.tag}" and try again.`,
+          ),
+          ...disagreements,
+        ],
+        exitCode: 1,
+      });
+    }
+    refspecs.push(`${tagCommit}:refs/heads/${plan.branch}`);
   }
 
   let pushed = false;
   if (refspecs.length > 0) {
     try {
-      await git.run(['push', remote, ...refspecs]);
+      // A fresh freeze runs the plan's own push: two refspecs, atomic, so
+      // neither lands without the other. A recovery pushes its one ref,
+      // which lands or fails on its own.
+      await git.run(
+        refspecs.length > 1 ? plan.push : ['push', remote, ...refspecs],
+      );
       pushed = true;
     } catch (pushError) {
       return result(plan, {
@@ -207,6 +261,7 @@ export async function eol({
         tagExisted,
         problems: [
           error(`Could not write SUPPORT.yaml: ${writeError.message}`),
+          ...disagreements,
         ],
         steps: nextSteps(plan, {
           dryRun: false,
@@ -226,6 +281,7 @@ export async function eol({
     tagExisted,
     written,
     path,
+    problems: disagreements,
     steps: nextSteps(plan, {
       dryRun: false,
       write,
@@ -252,9 +308,9 @@ function nextSteps(plan, { dryRun, write, branchExisted, tagExisted, pushed }) {
   } else if (dryRun) {
     steps.push(`Would create ${plan.branch} from ${plan.baseRef} and push it.`);
   } else if (pushed) {
-    steps.push(
-      `Froze ${plan.version} on ${plan.branch}, cut from ${plan.baseRef}.`,
-    );
+    // No "cut from": a recovery may have finished the freeze from the ref
+    // that already existed rather than from the line branch.
+    steps.push(`Froze ${plan.version} on ${plan.branch}.`);
   }
 
   if (tagExisted) {

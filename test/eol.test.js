@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 
 import { eol } from '../src/commands/eol.js';
 import { createGit } from '../src/git/git.js';
-import { git, makeGitRepo, supportYaml } from './helpers.js';
+import { git, commitFiles, makeGitRepo, supportYaml } from './helpers.js';
 
 /**
  * A repository with a remote and a line that can end.
@@ -382,5 +382,97 @@ describe('eol with refs that already exist', () => {
     assert.equal(result.branchExisted, true);
     assert.equal(result.tagExisted, true);
     assert.match(await readSupportFile(cwd), /stage: el/);
+  });
+
+  it('says so when the frozen branch and the tag disagree', async () => {
+    const cwd = await setup();
+    // The two refs were made by hand, at different times.
+    await git(['branch', 'el/v1.x'], cwd);
+    await git(['push', 'origin', 'el/v1.x'], cwd);
+    await commitFiles(cwd, { 'later.txt': 'later\n' }, 'fix: later');
+    await git(['tag', 'v1.x-eol'], cwd);
+    await git(['push', 'origin', 'v1.x-eol'], cwd);
+
+    const result = await run(cwd, { date: '2027-02-01', force: true });
+
+    assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+    const noticed = result.problems.find(
+      (problem) => problem.level === 'warning',
+    );
+    assert.ok(noticed, 'expected a warning about the disagreeing refs');
+    assert.match(noticed.message, /point at different commits/);
+  });
+});
+
+describe('eol keeps one freeze snapshot', () => {
+  it('publishes the frozen branch and the tag together, or not at all', async () => {
+    const cwd = await setup();
+    const { mkdir, rm, writeFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const remoteUrl = (await git(['remote', 'get-url', 'origin'], cwd)).trim();
+    // Wedge the tag ref on the remote: without an atomic push the branch
+    // below would still be published, leaving half a freeze behind.
+    const lock = join(remoteUrl, 'refs', 'tags', 'v1.x-eol.lock');
+    await mkdir(join(remoteUrl, 'refs', 'tags'), { recursive: true });
+    await writeFile(lock, '', 'utf8');
+
+    const result = await run(cwd, { date: '2027-02-01' });
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.problems[0].message, /git push failed/);
+    const refs = await remoteRefs(cwd);
+    assert.doesNotMatch(refs, /refs\/heads\/el\//);
+    assert.doesNotMatch(refs, /refs\/tags\/v1\.x-eol/);
+
+    await rm(lock, { force: true });
+  });
+
+  it('--force tags the branch that was already frozen, not a line that moved', async () => {
+    const cwd = await setup();
+    // The frozen branch made it to the remote; the tag never did.
+    await git(['branch', 'el/v1.x'], cwd);
+    await git(['push', 'origin', 'el/v1.x'], cwd);
+    await git(['branch', '-D', 'el/v1.x'], cwd);
+    const frozen = (await git(['rev-parse', 'origin/el/v1.x'], cwd)).trim();
+    // The line has moved on since the freeze.
+    await git(['checkout', 'ls/v1.x'], cwd);
+    await commitFiles(cwd, { 'later.txt': 'later\n' }, 'fix: after the freeze');
+    await git(['push', 'origin', 'ls/v1.x'], cwd);
+    await git(['checkout', 'devel'], cwd);
+
+    const result = await run(cwd, { date: '2027-02-01', force: true });
+
+    assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+    assert.equal(result.tagExisted, false);
+    const refs = await remoteRefs(cwd);
+    const tag = refs
+      .split('\n')
+      .find((line) => line.includes('refs/tags/v1.x-eol'));
+    const branch = refs
+      .split('\n')
+      .find((line) => line.includes('refs/heads/el/v1.x'));
+    // The tag marks the frozen branch, and the branch itself was not moved.
+    assert.equal(tag.split(' ')[0], frozen);
+    assert.equal(branch.split(' ')[0], frozen);
+  });
+
+  it('--force cuts the frozen branch from the tag that already marks the end', async () => {
+    const cwd = await setup({ tags: ['v1.x-eol'] });
+    const frozen = (await git(['rev-parse', 'refs/tags/v1.x-eol'], cwd)).trim();
+    // The line has moved on since the tag was made.
+    await git(['checkout', 'ls/v1.x'], cwd);
+    await commitFiles(cwd, { 'later.txt': 'later\n' }, 'fix: after the tag');
+    await git(['push', 'origin', 'ls/v1.x'], cwd);
+    await git(['checkout', 'devel'], cwd);
+
+    const result = await run(cwd, { date: '2027-02-01', force: true });
+
+    assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+    assert.equal(result.branchExisted, false);
+    const refs = await remoteRefs(cwd);
+    const branch = refs
+      .split('\n')
+      .find((line) => line.includes('refs/heads/el/v1.x'));
+    assert.equal(branch.split(' ')[0], frozen);
   });
 });

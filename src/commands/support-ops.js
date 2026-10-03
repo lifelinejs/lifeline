@@ -64,13 +64,12 @@ export async function fetchFirst({ git, remote }) {
   } catch (fetchError) {
     return [error(`git fetch ${remote} failed: ${gitMessage(fetchError)}`)];
   }
-}
-
-/**
- * Does the remote have this branch or tag?
+} /**
+ * Look a branch or tag up on the remote.
  *
- * `git ls-remote --heads|--tags` asks the remote itself for the exact ref, so
- * the answer cannot be fooled by a local branch with the same name, nor by a
+ * `git ls-remote --heads|--tags` is asked for the exact ref (and, for a tag,
+ * for the `^{}` line too), so the answer is about the remote itself: it
+ * cannot be fooled by a local branch with the same name, nor by a
  * remote-tracking ref left behind by an earlier fetch. Lifecycle commands
  * mutate the remote, so their existence checks have to be about the remote.
  *
@@ -79,15 +78,37 @@ export async function fetchFirst({ git, remote }) {
  * @param {string} options.remote
  * @param {'heads' | 'tags'} options.kind
  * @param {string} options.name Branch or tag name, e.g. "el/v1.x".
- * @returns {Promise<boolean>} True when the remote returns that ref.
+ * @returns {Promise<{sha: string, peeled: string | null} | null>} null when
+ *   the remote does not have the ref. `sha` is the object the ref points at;
+ *   `peeled` is the commit underneath it, for an annotated tag.
  * @throws {Error} When the remote cannot be asked; callers report it rather
  *   than guessing, because a wrong answer here either skips a push that was
  *   needed or walks over a ref that was not ours to touch.
  */
-export async function remoteRefExists({ git, remote, kind, name }) {
+export async function remoteRef({ git, remote, kind, name }) {
   const ref = `refs/${kind}/${name}`;
-  const output = await git.run(['ls-remote', `--${kind}`, remote, ref]);
-  return output.split('\n').some((line) => line.trim().split(/\s+/)[1] === ref);
+  // The peel line only comes back when it is asked for by name.
+  const output = await git.run([
+    'ls-remote',
+    `--${kind}`,
+    remote,
+    ref,
+    `${ref}^{}`,
+  ]);
+  let sha = null;
+  let peeled = null;
+  for (const line of output.split('\n')) {
+    const [object, refName] = line.trim().split(/\s+/);
+    if (!object || !refName) {
+      continue;
+    }
+    if (refName === ref) {
+      sha = object;
+    } else if (refName === `${ref}^{}`) {
+      peeled = object;
+    }
+  }
+  return sha === null ? null : { sha, peeled };
 }
 
 /**

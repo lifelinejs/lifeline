@@ -14,7 +14,7 @@ import {
   fetchFirst,
   gitMessage,
   readSupport,
-  remoteRefExists,
+  remoteRef,
   writeMovedLine,
 } from './support-ops.js';
 
@@ -116,9 +116,9 @@ export async function promote({
   // checkout instead: a branch that exists only on the remote would slip past
   // the refusal, and one that exists only here would skip the push that is
   // needed to create it.
-  let branchExisted;
+  let remoteBranch;
   try {
-    branchExisted = await remoteRefExists({
+    remoteBranch = await remoteRef({
       git,
       remote,
       kind: 'heads',
@@ -132,6 +132,7 @@ export async function promote({
       exitCode: 1,
     });
   }
+  const branchExisted = remoteBranch !== null;
   if (branchExisted && !force) {
     return result(plan, {
       branchExisted,

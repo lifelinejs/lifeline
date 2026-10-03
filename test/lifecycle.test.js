@@ -197,6 +197,7 @@ describe('planEol', () => {
     assert.equal(plan.tag, 'v1.x-eol');
     assert.deepEqual(plan.push, [
       'push',
+      '--atomic',
       'origin',
       'origin/ls/v1.x:refs/heads/el/v1.x',
       'origin/ls/v1.x:refs/tags/v1.x-eol',
