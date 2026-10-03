@@ -6,6 +6,7 @@
 import { linesFromBranches } from '../core/discover.js';
 import { error } from '../core/problems.js';
 import {
+  createSupport,
   loadSupport,
   renderSupportFile,
   writeSupport,
@@ -46,18 +47,7 @@ export async function init({ cwd, git, force = false }) {
   // than "missing" means it exists, and we must not clobber it silently.
   const existing = await loadSupport(cwd);
   if (existing.outcome !== 'missing' && !force) {
-    return {
-      written: false,
-      path: null,
-      text: '',
-      lines: [],
-      problems: [
-        error(
-          'SUPPORT.yaml already exists. Look at it, and pass --force to write a new one over it.',
-        ),
-      ],
-      exitCode: 1,
-    };
+    return refuseExisting();
   }
 
   /** @type {import('../core/support.js').Line[]} */
@@ -80,7 +70,50 @@ export async function init({ cwd, git, force = false }) {
   }
 
   const text = renderSupportFile(lines);
-  const path = await writeSupport(cwd, text);
+  let path;
+  try {
+    // --force replaces the file; without it the create is exclusive, so a
+    // SUPPORT.yaml that appears after the check above still cannot be lost.
+    path = force
+      ? await writeSupport(cwd, text)
+      : await createSupport(cwd, text);
+  } catch (writeError) {
+    if (writeError.code === 'EEXIST') {
+      // Somebody (or some other run) wrote the file first: same answer as the
+      // check at the top, with the same words.
+      return refuseExisting();
+    }
+    return {
+      written: false,
+      path: null,
+      text: '',
+      lines: [],
+      problems: [error(`Could not write SUPPORT.yaml: ${writeError.message}`)],
+      exitCode: 1,
+    };
+  }
 
   return { written: true, path, text, lines, problems: [], exitCode: 0 };
+}
+
+/**
+ * The answer for "there is a SUPPORT.yaml here already and no --force":
+ * write nothing, and say how to proceed. Shared by the check before we guess
+ * at lines and by the exclusive create that follows it, so the two cannot
+ * drift apart.
+ * @returns {InitResult}
+ */
+function refuseExisting() {
+  return {
+    written: false,
+    path: null,
+    text: '',
+    lines: [],
+    problems: [
+      error(
+        'SUPPORT.yaml already exists. Look at it, and pass --force to write a new one over it.',
+      ),
+    ],
+    exitCode: 1,
+  };
 }

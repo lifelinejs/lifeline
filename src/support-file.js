@@ -3,7 +3,8 @@
 // This is the one place Lifeline reads the support file. `src/core` stays pure
 // (no file system), so the commands go through here instead.
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { parseSupport } from './core/support.js';
@@ -106,12 +107,44 @@ function renderComponents(components) {
 
 /**
  * Write SUPPORT.yaml into a directory, replacing any existing file.
+ *
+ * The text goes to a temporary file in the same directory first and is then
+ * renamed over SUPPORT.yaml, so a reader never sees half a file, and a write
+ * that fails halfway never destroys the one that was there.
+ *
  * @param {string} cwd
  * @param {string} text
  * @returns {Promise<string>} The path written to.
  */
 export async function writeSupport(cwd, text) {
   const path = join(cwd, SUPPORT_FILE);
-  await writeFile(path, text, 'utf8');
+  // Same directory as the target, so the rename stays on one filesystem.
+  const temporary = join(cwd, `.${SUPPORT_FILE}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, text, 'utf8');
+    await rename(temporary, path);
+  } catch (writeError) {
+    // Whatever went wrong, do not leave the temporary file behind.
+    await rm(temporary, { force: true }).catch(() => {});
+    throw writeError;
+  }
+  return path;
+}
+
+/**
+ * Write SUPPORT.yaml only when the directory has none yet.
+ *
+ * The `wx` flag makes the create exclusive: it fails with `EEXIST` instead of
+ * clobbering a file that is already there, which is what `lifeline init`
+ * relies on when it runs without `--force`. Keeping this separate from
+ * writeSupport() means the replace path cannot be taken by accident.
+ *
+ * @param {string} cwd
+ * @param {string} text
+ * @returns {Promise<string>} The path written to.
+ */
+export async function createSupport(cwd, text) {
+  const path = join(cwd, SUPPORT_FILE);
+  await writeFile(path, text, { encoding: 'utf8', flag: 'wx' });
   return path;
 }

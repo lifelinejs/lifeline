@@ -3,14 +3,18 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { check } from '../src/commands/check.js';
 import { init, starterLines } from '../src/commands/init.js';
 import { linesFromBranches } from '../src/core/discover.js';
 import { createGit } from '../src/git/git.js';
-import { SCHEMA_URL } from '../src/support-file.js';
+import {
+  createSupport,
+  SCHEMA_URL,
+  writeSupport,
+} from '../src/support-file.js';
 import { parseSupport } from '../src/core/support.js';
 import { git, makeGitRepo, makeTempDir } from './helpers.js';
 
@@ -127,6 +131,46 @@ test('--force writes over the old file', async () => {
 
   assert.equal(result.written, true);
   assert.match(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), /"1\.x"/);
+});
+
+test('createSupport refuses an existing file, writeSupport replaces it', async () => {
+  const cwd = await makeTempDir({ 'SUPPORT.yaml': 'old\n' });
+
+  // The exclusive create is what keeps a non-forced init honest.
+  await assert.rejects(
+    () => createSupport(cwd, 'new\n'),
+    (thrown) => thrown.code === 'EEXIST',
+  );
+  assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), 'old\n');
+
+  // The replace path writes through a temporary file and renames it, so no
+  // temporary file is left lying around afterwards.
+  await writeSupport(cwd, 'new\n');
+  assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), 'new\n');
+  assert.deepEqual(await readdir(cwd), ['SUPPORT.yaml']);
+});
+
+test('a SUPPORT.yaml that appears mid-run is refused, not clobbered', async () => {
+  const cwd = await makeTempDir();
+  const racingGit = {
+    ...fakeGit(['devel']),
+    // Somebody writes the file while we are guessing lines from branches.
+    branches: async () => {
+      await writeFile(
+        join(cwd, 'SUPPORT.yaml'),
+        'lines:\n  - version: "9.x"\n    stage: indev\n',
+        'utf8',
+      );
+      return ['devel'];
+    },
+  };
+
+  const result = await init({ cwd, git: racingGit });
+
+  assert.equal(result.written, false);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.problems[0].message, /already exists/);
+  assert.match(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), /"9\.x"/);
 });
 
 test('a git failure writes nothing', async () => {
