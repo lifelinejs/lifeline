@@ -30,7 +30,9 @@ export const SUPPORT_CHANGED = 'ECHANGED';
  *
  * Only `lifeline init --force` can reach this: it is the one writer told to
  * replace a file without having read it. Everywhere else the file is read
- * first, or the run stops.
+ * first, or the run stops. It is not a pass for the write: the file still has to
+ * be unreadable when the name is about to change, which is what `assertUnchanged`
+ * checks.
  */
 export const COULD_NOT_READ = Symbol('could not read SUPPORT.yaml');
 
@@ -153,8 +155,9 @@ function renderComponents(components) {
  * @param {string} text
  * @param {string | null | typeof COULD_NOT_READ} expected What the caller read:
  *   the text the file held, or null when there was no file. COULD_NOT_READ is
- *   for the one caller that could not read the file at all, so nothing is
- *   compared and the write goes ahead.
+ *   for the one caller that could not read the file at all: nothing is compared
+ *   against text, so its write goes ahead while the file still cannot be read
+ *   and is refused once it can be.
  * @returns {Promise<string>} The path written to.
  */
 export async function writeSupport(cwd, text, expected) {
@@ -250,6 +253,12 @@ async function publish(cwd, text, { exclusive, expected }) {
 /**
  * Refuse to replace a file that is no longer the one the caller read.
  *
+ * COULD_NOT_READ is not a blank cheque: it says the caller could not read the
+ * file at all, so its write stands only while the file still cannot be read. If
+ * it can be read now, or is not there any more, what the caller decided on is no
+ * longer true, and replacing it would put a change nobody has looked at over the
+ * top of the file.
+ *
  * @param {string} path
  * @param {string | null | typeof COULD_NOT_READ} expected
  * @returns {Promise<void>}
@@ -258,10 +267,22 @@ async function publish(cwd, text, { exclusive, expected }) {
  *   started, so the run can say what is wrong with the file instead.
  */
 async function assertUnchanged(path, expected) {
-  if (expected === COULD_NOT_READ) {
+  let now;
+  try {
+    now = await readFileOrNull(path);
+  } catch (readError) {
+    if (expected !== COULD_NOT_READ) {
+      // A caller that could read this a moment ago has to hear why it cannot
+      // now: the write has not started, so the file is still safe.
+      throw readError;
+    }
+    // Still no way in, so nothing about the file has become readable behind the
+    // caller's back: the reason it is replacing this file still holds.
     return;
   }
-  const now = await readFileOrNull(path);
+
+  // COULD_NOT_READ is a symbol, so it never equals a string: getting here with
+  // it means the file turned out to be readable after all.
   if (now === expected) {
     return;
   }

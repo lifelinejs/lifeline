@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -18,6 +18,7 @@ import {
   createSupport,
   SCHEMA_URL,
   SUPPORT_CHANGED,
+  SUPPORT_FILE,
   writeSupport,
 } from '../src/support-file.js';
 import { parseSupport } from '../src/core/support.js';
@@ -272,14 +273,48 @@ test('writeSupport refuses a file that appeared where there was none', async () 
   assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), 'new\n');
 });
 
-test('writeSupport replaces a file the caller could not read', async () => {
-  const cwd = await makeTempDir({ 'SUPPORT.yaml': 'old\n' });
+test('writeSupport replaces a file that still cannot be read', async (t) => {
+  const cwd = await makeTempDir();
 
-  // The one caller with nothing to compare: `init --force` was asked to replace
-  // this file and could not read it, so there is no "before" to check against.
+  // A file this process cannot read, whatever its rights are: a symbolic link
+  // that points at itself never resolves. `chmod` would not do, since a mode of
+  // zero is advice rather than a rule for root, and on Windows it is not even
+  // read that way. Where a file system cannot make the link at all, there is
+  // nothing here to test.
+  let linked = false;
+  try {
+    await symlink(SUPPORT_FILE, join(cwd, SUPPORT_FILE), 'file');
+    linked = true;
+  } catch (linkError) {
+    t.skip(
+      `this file system cannot make a self-referencing link: ${linkError.code}`,
+    );
+    return;
+  }
+  assert.equal(linked, true);
+
+  // The one caller with no text to compare: `init --force` was told to replace
+  // this file and could not read it. Its write goes ahead while the file still
+  // cannot be read, and replaces the link rather than following it.
   await writeSupport(cwd, 'new\n', COULD_NOT_READ);
 
-  assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), 'new\n');
+  assert.equal(await readFile(join(cwd, SUPPORT_FILE), 'utf8'), 'new\n');
+  assert.deepEqual(await readdir(cwd), [SUPPORT_FILE]);
+});
+
+test('writeSupport refuses a file that turned out to be readable', async () => {
+  const cwd = await makeTempDir({ 'SUPPORT.yaml': 'old\n' });
+
+  // COULD_NOT_READ says the caller could not read the file. If it can be read
+  // now, what that caller decided on is out of date, and the write stands down:
+  // there is no telling which version of the file it meant to replace.
+  await assert.rejects(
+    () => writeSupport(cwd, 'new\n', COULD_NOT_READ),
+    (thrown) => thrown.code === SUPPORT_CHANGED,
+  );
+
+  assert.equal(await readFile(join(cwd, 'SUPPORT.yaml'), 'utf8'), 'old\n');
+  assert.deepEqual(await readdir(cwd), ['SUPPORT.yaml']);
 });
 
 test('createSupport publishes the file whole and leaves nothing behind', async () => {

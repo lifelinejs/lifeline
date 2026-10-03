@@ -127,7 +127,8 @@ async function writeStarterFile({ cwd, git, force }) {
  * @returns {string | null | typeof COULD_NOT_READ} The text the file held, null
  *   when there was none, or COULD_NOT_READ for the one case where there is
  *   nothing to compare: a file that could not be read. Replacing that is what
- *   --force is for, and refusing would leave the user with no way to get past
+ *   --force is for, and such a write stands only while the file still cannot be
+ *   read, so re-running after the permissions are fixed is enough to get past
  *   it.
  */
 function expectedContents(loaded) {
