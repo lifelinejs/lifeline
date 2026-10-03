@@ -230,7 +230,15 @@ async function publish(cwd, text, { exclusive, expected }) {
 
     if (exclusive) {
       await link(temporary, path);
-      await rm(temporary, { force: true });
+      // SUPPORT.yaml is whole under its own name now, so dropping the temporary
+      // name is tidying up rather than part of the write. It is tried again
+      // before it counts as a failure: reporting a write that worked as one
+      // that did not would send the user looking for a problem that is not
+      // there, and the directory flush below still happens either way. If the
+      // second try fails too the leftover is real, and that is worth an error.
+      await rm(temporary, { force: true }).catch(() =>
+        rm(temporary, { force: true }),
+      );
     } else {
       // The last thing before the name moves. Everything slow is already done,
       // so this is as close to the rename as the check can get.
