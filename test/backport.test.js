@@ -312,6 +312,18 @@ describe('backport safety checks', () => {
     assert.doesNotMatch(result.problems[0].message, /Command failed/);
   });
 
+  it('fetches before it decides, so a stale checkout still works', async () => {
+    const { cwd, sha } = await setup();
+    // Pretend this checkout has never seen the remote's copy of the branch:
+    // without a fetch first, origin/as/v1.x would look like it is missing.
+    await git(['update-ref', '-d', 'refs/remotes/origin/as/v1.x'], cwd);
+
+    const { result } = await run(cwd, { overrides: { sha } });
+
+    assert.equal(result.exitCode, 0, JSON.stringify(result.problems));
+    assert.equal(result.done, true);
+  });
+
   it('refuses when the support branch is not on the remote', async () => {
     const { cwd, sha } = await setup({
       support: supportYaml([{ version: '1.x', stage: 'as' }]),
@@ -455,6 +467,18 @@ describe('backport flags', () => {
     assert.doesNotMatch(heads, /backport/);
     const current = await git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
     assert.equal(current.trim(), 'devel');
+  });
+
+  it('--dry-run says the remote refs may be stale', async () => {
+    const { cwd, sha } = await setup();
+    const { result } = await run(cwd, {
+      overrides: { sha, dryRun: true },
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.problems.length, 1);
+    assert.equal(result.problems[0].level, 'warning');
+    assert.match(result.problems[0].message, /refs may be stale/);
   });
 
   it('--no-pr pushes and stops', async () => {

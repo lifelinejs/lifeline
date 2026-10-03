@@ -5,7 +5,7 @@
 // network) and returns data. Nothing here prints; the CLI does that.
 
 import { planBackport, resolveTarget } from '../core/backport.js';
-import { error } from '../core/problems.js';
+import { error, warning } from '../core/problems.js';
 import { normalizeLine } from '../core/stages.js';
 import { loadSupport } from '../support-file.js';
 
@@ -118,6 +118,22 @@ export async function backport({
     );
   }
 
+  // Every check below is about the remote, so fetch first: without it they
+  // would answer from refs left behind by some earlier fetch. A dry run
+  // changes nothing, not even the remote-tracking refs, so it skips the fetch
+  // and reports the refs as possibly stale further down.
+  if (!dryRun) {
+    try {
+      await git.fetchRemote();
+    } catch (fetchError) {
+      return stopped(
+        null,
+        [error(`git fetch ${remote} failed: ${gitMessage(fetchError)}`)],
+        1,
+      );
+    }
+  }
+
   // A fix belongs on the development branch before it can travel anywhere.
   const develRef = `${remote}/devel`;
   if (!(await git.branchExists(develRef))) {
@@ -162,7 +178,15 @@ export async function backport({
   });
 
   if (dryRun) {
-    return { ...emptyResult(plan), exitCode: 0 };
+    // Nothing was fetched, so the checks above answered from whatever the
+    // last fetch left behind; say so rather than imply the remote was asked.
+    return {
+      ...emptyResult(plan),
+      problems: [
+        warning(`--dry-run does not fetch, so ${remote} refs may be stale.`),
+      ],
+      exitCode: 0,
+    };
   }
 
   // Check the forge before changing anything: no branch, no half-done work.
@@ -172,16 +196,6 @@ export async function backport({
     } catch (forgeError) {
       return stopped(plan, [error(forgeError.message)], 1);
     }
-  }
-
-  try {
-    await git.fetchRemote();
-  } catch (fetchError) {
-    return stopped(
-      plan,
-      [error(`git fetch ${remote} failed: ${gitMessage(fetchError)}`)],
-      1,
-    );
   }
 
   // Where the user was before, so a failure can put them back there.
