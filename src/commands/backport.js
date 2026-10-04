@@ -311,7 +311,7 @@ export async function backport({
     };
   }
 
-  let prUrl = null;
+  let prUrl;
   try {
     const request = await forge.createPullRequest({
       base: target.branch,

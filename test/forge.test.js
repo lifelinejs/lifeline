@@ -205,6 +205,9 @@ describe('github forge pull requests', () => {
         (thrown) => {
           assert.match(thrown.message, /gh pr create failed/);
           assert.match(thrown.message, /no pull requests for you/);
+          assert.ok(thrown.cause instanceof Error);
+          assert.equal(thrown.cause.code, 1);
+          assert.match(thrown.cause.stderr, /no pull requests for you/);
           return true;
         },
       );

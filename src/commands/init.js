@@ -80,7 +80,7 @@ async function writeStarterFile({ cwd, git, force }) {
   }
 
   /** @type {import('../core/support.js').Line[]} */
-  let lines = [];
+  let lines;
   try {
     const guessed = linesFromBranches(await git.branches());
     // No support branches and no devel: this is a fresh repository.

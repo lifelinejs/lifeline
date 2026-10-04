@@ -281,7 +281,7 @@ test('writeSupport replaces a file that still cannot be read', async (t) => {
   // zero is advice rather than a rule for root, and on Windows it is not even
   // read that way. Where a file system cannot make the link at all, there is
   // nothing here to test.
-  let linked = false;
+  let linked;
   try {
     await symlink(SUPPORT_FILE, join(cwd, SUPPORT_FILE), 'file');
     linked = true;

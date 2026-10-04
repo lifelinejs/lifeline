@@ -110,8 +110,8 @@ export async function eol({
   // A lookup that cannot be answered stops the command: guessing here would
   // either push over a ref that is not ours or skip a push that is needed.
   let branchExisted = false;
-  let remoteBranch = null;
-  let remoteTag = null;
+  let remoteBranch;
+  let remoteTag;
   let asked = '';
   try {
     asked = `--heads ${remote} refs/heads/${plan.branch}`;

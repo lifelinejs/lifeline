@@ -192,7 +192,7 @@ export async function createPullRequest({
   } catch (ghError) {
     // gh puts the interesting part on stderr; show it instead of our wrapper.
     const detail = String(ghError.stderr || '').trim() || ghError.message;
-    throw new Error(`gh pr create failed: ${detail}`);
+    throw new Error(`gh pr create failed: ${detail}`, { cause: ghError });
   }
 
   // gh prints the new pull request's URL on the last line of its output.
